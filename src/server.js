@@ -927,6 +927,17 @@ app.use(async (req, res) => {
     }
   }
 
+  // Redirect browser requests to a tokenized URL so the Control UI can
+  // include the gateway token in its WS connect frames.
+  if (
+    !req.query.token &&
+    req.accepts("html") &&
+    (req.path === "/" || req.path.startsWith("/openclaw"))
+  ) {
+    const sep = req.url.includes("?") ? "&" : "?";
+    return res.redirect(`${req.url}${sep}token=${OPENCLAW_GATEWAY_TOKEN}`);
+  }
+
   // Proxy to gateway (auth token injected via proxyReq event)
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
