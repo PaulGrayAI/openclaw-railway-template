@@ -186,6 +186,12 @@ async function startGateway() {
     throw err; // Don't start gateway with mismatched token
   }
 
+  // Ensure trustedProxies includes loopback so the gateway honours X-Forwarded-* from the wrapper
+  await runCmd(
+    OPENCLAW_NODE,
+    clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']),
+  );
+
   console.log(`[gateway] ========== TOKEN SYNC COMPLETE ==========`);
 
   const args = [
@@ -649,6 +655,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
       );
 
+      // Trust the loopback proxy so X-Forwarded-* headers are honoured
+      await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']),
+      );
+
       const channelsHelp = await runCmd(
         OPENCLAW_NODE,
         clawArgs(["channels", "add", "--help"]),
@@ -892,10 +904,10 @@ proxy.on("proxyReq", (proxyReq, req, res) => {
   proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
 });
 
-// Log WebSocket upgrade proxy events (token is injected via headers option in server.on("upgrade"))
+// Inject auth token into WebSocket proxy requests
 proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
-  console.log(`[proxy-event] WebSocket proxyReqWs event fired for ${req.url}`);
-  console.log(`[proxy-event] Headers:`, JSON.stringify(proxyReq.getHeaders()));
+  console.log(`[proxy-ws] WebSocket proxyReqWs - injecting token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
+  proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
 });
 
 app.use(async (req, res) => {
