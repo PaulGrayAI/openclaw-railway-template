@@ -191,6 +191,15 @@ async function startGateway() {
     OPENCLAW_NODE,
     clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']),
   );
+  // Ensure Control UI auth settings are present for behind-proxy operation
+  await runCmd(
+    OPENCLAW_NODE,
+    clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
+  );
+  await runCmd(
+    OPENCLAW_NODE,
+    clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
+  );
 
   console.log(`[gateway] ========== TOKEN SYNC COMPLETE ==========`);
 
@@ -654,6 +663,11 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         OPENCLAW_NODE,
         clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
       );
+      // Disable device auth for behind-proxy scenarios (GitHub issue #1690)
+      await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
+      );
 
       // Trust the loopback proxy so X-Forwarded-* headers are honoured
       await runCmd(
@@ -904,10 +918,16 @@ proxy.on("proxyReq", (proxyReq, req, res) => {
   proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
 });
 
-// Inject auth token into WebSocket proxy requests
+// Inject auth token into WebSocket proxy requests and strip forwarded-client
+// headers so the gateway sees the connection as local (127.0.0.1).
+// With allowInsecureAuth the gateway skips token auth for local clients.
 proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
-  console.log(`[proxy-ws] WebSocket proxyReqWs - injecting token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
   proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
+  proxyReq.removeHeader("x-forwarded-for");
+  proxyReq.removeHeader("x-forwarded-proto");
+  proxyReq.removeHeader("x-forwarded-host");
+  proxyReq.removeHeader("x-forwarded-port");
+  proxyReq.removeHeader("x-real-ip");
 });
 
 app.use(async (req, res) => {
