@@ -901,6 +901,90 @@ app.get("/setup/export", requireSetupAuth, async (_req, res) => {
   stream.pipe(res);
 });
 
+// ---------------------------------------------------------------------------
+// File API — list, read, write workspace files (protected by SETUP_PASSWORD)
+// ---------------------------------------------------------------------------
+
+function safePath(userPath) {
+  const resolved = path.resolve(WORKSPACE_DIR, userPath || "");
+  if (!resolved.startsWith(path.resolve(WORKSPACE_DIR))) return null;
+  return resolved;
+}
+
+app.get("/setup/api/files/list", requireSetupAuth, (req, res) => {
+  const target = safePath(req.query.path || "");
+  if (!target) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    const entries = fs.readdirSync(target, { withFileTypes: true });
+    const items = entries.map((e) => ({
+      name: e.name,
+      type: e.isDirectory() ? "dir" : "file",
+    }));
+    res.json({ path: path.relative(WORKSPACE_DIR, target) || ".", items });
+  } catch (err) {
+    res.status(err.code === "ENOENT" ? 404 : 500).json({ error: String(err) });
+  }
+});
+
+app.get("/setup/api/files/read", requireSetupAuth, (req, res) => {
+  const target = safePath(req.query.path || "");
+  if (!target) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) {
+      return res.status(400).json({ error: "Path is a directory, use /list" });
+    }
+    const content = fs.readFileSync(target, "utf8");
+    res.json({
+      path: path.relative(WORKSPACE_DIR, target),
+      size: stat.size,
+      content,
+    });
+  } catch (err) {
+    res.status(err.code === "ENOENT" ? 404 : 500).json({ error: String(err) });
+  }
+});
+
+app.post("/setup/api/files/write", requireSetupAuth, (req, res) => {
+  const { path: filePath, content } = req.body || {};
+  if (!filePath) return res.status(400).json({ error: "Missing path" });
+  if (typeof content !== "string") {
+    return res.status(400).json({ error: "Missing or invalid content" });
+  }
+
+  const target = safePath(filePath);
+  if (!target) return res.status(400).json({ error: "Invalid path" });
+
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, "utf8");
+    res.json({
+      ok: true,
+      path: path.relative(WORKSPACE_DIR, target),
+      size: Buffer.byteLength(content, "utf8"),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/setup/api/files/delete", requireSetupAuth, (req, res) => {
+  const target = safePath(req.query.path || "");
+  if (!target) return res.status(400).json({ error: "Invalid path" });
+  if (target === path.resolve(WORKSPACE_DIR)) {
+    return res.status(400).json({ error: "Cannot delete workspace root" });
+  }
+
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    res.json({ ok: true, path: path.relative(WORKSPACE_DIR, target) });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // Proxy everything else to the gateway.
 const proxy = httpProxy.createProxyServer({
   target: GATEWAY_TARGET,
