@@ -74,6 +74,7 @@
       flow: document.getElementById('flow').value,
       authChoice: authChoiceEl.value,
       authSecret: document.getElementById('authSecret').value,
+      subagentModel: document.getElementById('subagentModel').value,
       telegramToken: document.getElementById('telegramToken').value,
       discordToken: document.getElementById('discordToken').value,
       slackBotToken: document.getElementById('slackBotToken').value,
@@ -97,6 +98,31 @@
     }).catch(function (e) {
       logEl.textContent += '\nError: ' + String(e) + '\n';
     });
+  };
+
+  // Update model config on a running instance
+  document.getElementById('updateModels').onclick = function () {
+    var subagentModel = document.getElementById('subagentModel').value;
+    if (!subagentModel) {
+      alert('Enter a sub-agent model first (e.g., openrouter/pony-alpha)');
+      return;
+    }
+    var isOpenRouter = subagentModel.indexOf('openrouter/') === 0;
+    logEl.textContent = 'Updating model config...\n';
+    fetch('/setup/api/update-models', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        subagentModel: subagentModel,
+        enableOpenRouterFallback: isOpenRouter
+      })
+    }).then(function (res) { return res.json(); })
+      .then(function (j) {
+        logEl.textContent += (j.output || JSON.stringify(j, null, 2)) + '\n';
+        if (j.ok) logEl.textContent += '\n✓ Model config updated. Gateway restarted.\n';
+      })
+      .catch(function (e) { logEl.textContent += 'Error: ' + String(e) + '\n'; });
   };
 
   // Pairing approve helper

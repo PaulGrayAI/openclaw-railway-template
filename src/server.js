@@ -675,6 +675,42 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']),
       );
 
+      // Register OpenRouter as a custom provider so uncatalogued models
+      // (e.g., openrouter/pony-alpha) can resolve via resolveModel()'s
+      // generic provider-config fallback.  Without this entry, any OpenRouter
+      // model not in the built-in models.generated catalog triggers
+      // "Unknown model" errors.  This is harmless if OpenRouter is unused.
+      if (payload.authChoice === "openrouter-api-key") {
+        const orResult = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "config",
+            "set",
+            "--json",
+            "models.providers.openrouter",
+            JSON.stringify({
+              baseUrl: "https://openrouter.ai/api/v1",
+              api: "openai",
+            }),
+          ]),
+        );
+        extra += `\n[openrouter-fallback] exit=${orResult.code}\n${orResult.output || "(ok)"}\n`;
+      }
+
+      // Configure sub-agent model if specified by the user
+      if (payload.subagentModel?.trim()) {
+        const saResult = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs([
+            "config",
+            "set",
+            "agents.defaults.subagents.model",
+            payload.subagentModel.trim(),
+          ]),
+        );
+        extra += `\n[subagent-model] exit=${saResult.code}\n${saResult.output || "(ok)"}\n`;
+      }
+
       const channelsHelp = await runCmd(
         OPENCLAW_NODE,
         clawArgs(["channels", "add", "--help"]),
@@ -849,6 +885,64 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
   } catch (err) {
     res.status(500).type("text/plain").send(String(err));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Model configuration — update sub-agent model + OpenRouter fallback
+// on an already-configured instance without re-running onboarding.
+// ---------------------------------------------------------------------------
+app.post("/setup/api/update-models", requireSetupAuth, async (req, res) => {
+  if (!isConfigured()) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "Not configured yet. Run setup first." });
+  }
+
+  const payload = req.body || {};
+  let output = "";
+
+  // Enable OpenRouter uncatalogued-model fallback so models not in the
+  // built-in catalog (e.g., openrouter/pony-alpha) resolve correctly.
+  if (payload.enableOpenRouterFallback) {
+    const r = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs([
+        "config",
+        "set",
+        "--json",
+        "models.providers.openrouter",
+        JSON.stringify({
+          baseUrl: "https://openrouter.ai/api/v1",
+          api: "openai",
+        }),
+      ]),
+    );
+    output += `[openrouter-fallback] exit=${r.code}\n${r.output || "(ok)"}\n`;
+  }
+
+  // Update sub-agent model
+  if (payload.subagentModel?.trim()) {
+    const r = await runCmd(
+      OPENCLAW_NODE,
+      clawArgs([
+        "config",
+        "set",
+        "agents.defaults.subagents.model",
+        payload.subagentModel.trim(),
+      ]),
+    );
+    output += `[subagent-model] set to ${payload.subagentModel.trim()} — exit=${r.code}\n${r.output || "(ok)"}\n`;
+  }
+
+  // Restart gateway to apply changes
+  try {
+    await restartGateway();
+    output += "[gateway] restarted to apply model config\n";
+  } catch (err) {
+    output += `[gateway] restart error: ${String(err)}\n`;
+  }
+
+  return res.json({ ok: true, output });
 });
 
 app.get("/setup/export", requireSetupAuth, async (_req, res) => {

@@ -41,6 +41,17 @@
   </div>
 
   <div class="card">
+    <h2>1b) Sub-agent model (optional)</h2>
+    <p class="muted">Override the model used by sub-agents (parallel workers). Useful for uncatalogued OpenRouter models like <code>openrouter/pony-alpha</code>. Leave blank to use the default.</p>
+    <label>Sub-agent model</label>
+    <input id="subagentModel" type="text" placeholder="e.g., openrouter/pony-alpha" />
+    <div style="margin-top: 0.75rem">
+      <button id="updateModels" class="secondary-button">Apply model config now</button>
+      <span class="muted" style="margin-left: 0.5rem">Updates a running instance without re-onboarding</span>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>2) Optional: Channels</h2>
     <p class="muted">You can also add channels later inside Openclaw, but this helps you get messaging working immediately.</p>
 
