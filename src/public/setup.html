@@ -29,6 +29,10 @@
     <label>Auth method</label>
     <select id="authChoice"></select>
 
+    <div id="oauthHint" class="muted" style="display:none; margin-top:0.5rem">
+      This provider uses an OAuth device-code flow. After clicking <strong>Run setup</strong>, a URL and code will appear in the log below. Open the URL in your browser and enter the code to authorize.
+    </div>
+
     <label>Key / Token (if required)</label>
     <input id="authSecret" type="password" placeholder="Paste API key / token if applicable" />
 

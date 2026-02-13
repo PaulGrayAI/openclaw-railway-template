@@ -6,9 +6,71 @@
   var authGroupEl = document.getElementById('authGroup');
   var authChoiceEl = document.getElementById('authChoice');
   var logEl = document.getElementById('log');
+  var oauthHintEl = document.getElementById('oauthHint');
+
+  var oauthAuthChoices = [];
+
+  function isOAuthChoice(choice) {
+    return oauthAuthChoices.indexOf(choice) !== -1;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function linkifyUrls(text) {
+    var escaped = escapeHtml(text);
+    return escaped.replace(/(https?:\/\/[^\s<"']+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  }
+
+  function appendLog(text) {
+    logEl.innerHTML += linkifyUrls(text);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function fetchStream(url, payload, onEvent) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (t) { throw new Error('HTTP ' + res.status + ': ' + t); });
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+
+      function pump() {
+        return reader.read().then(function (result) {
+          if (result.done) return;
+          buf += decoder.decode(result.value, { stream: true });
+          var lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (var i = 0; i < lines.length; i++) {
+            if (!lines[i].trim()) continue;
+            try {
+              onEvent(JSON.parse(lines[i]));
+            } catch (_e) {
+              // ignore malformed lines
+            }
+          }
+          return pump();
+        });
+      }
+
+      return pump();
+    });
+  }
 
   function setStatus(s) {
     statusEl.textContent = s;
+  }
+
+  function updateOAuthHint() {
+    if (!oauthHintEl) return;
+    oauthHintEl.style.display = isOAuthChoice(authChoiceEl.value) ? 'block' : 'none';
   }
 
   function renderAuth(groups) {
@@ -35,10 +97,13 @@
         opt2.textContent = o.label + (o.hint ? ' - ' + o.hint : '');
         authChoiceEl.appendChild(opt2);
       }
+      updateOAuthHint();
     };
 
     authGroupEl.onchange();
   }
+
+  authChoiceEl.addEventListener('change', updateOAuthHint);
 
   function httpJson(url, opts) {
     opts = opts || {};
@@ -58,10 +123,11 @@
     return httpJson('/setup/api/status').then(function (j) {
       var ver = j.openclawVersion ? (' | ' + j.openclawVersion) : '';
       setStatus((j.configured ? 'Configured - open /openclaw' : 'Not configured - run setup below') + ver);
+      if (j.oauthAuthChoices) oauthAuthChoices = j.oauthAuthChoices;
       renderAuth(j.authGroups || []);
       // If channels are unsupported, surface it for debugging.
       if (j.channelsAddHelp && j.channelsAddHelp.indexOf('telegram') === -1) {
-        logEl.textContent += '\nNote: this openclaw build does not list telegram in `channels add --help`. Telegram auto-add will be skipped.\n';
+        appendLog('\nNote: this openclaw build does not list telegram in `channels add --help`. Telegram auto-add will be skipped.\n');
       }
 
     }).catch(function (e) {
@@ -81,23 +147,48 @@
       slackAppToken: document.getElementById('slackAppToken').value
     };
 
-    logEl.textContent = 'Running...\n';
+    logEl.innerHTML = '';
 
-    fetch('/setup/api/run', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(function (res) {
-      return res.text();
-    }).then(function (text) {
-      var j;
-      try { j = JSON.parse(text); } catch (_e) { j = { ok: false, output: text }; }
-      logEl.textContent += (j.output || JSON.stringify(j, null, 2));
-      return refreshStatus();
-    }).catch(function (e) {
-      logEl.textContent += '\nError: ' + String(e) + '\n';
-    });
+    if (isOAuthChoice(payload.authChoice)) {
+      appendLog('Starting interactive OAuth setup...\n');
+      fetchStream('/setup/api/run-stream', payload, function (ev) {
+        switch (ev.type) {
+          case 'log':
+            appendLog(ev.text || '');
+            break;
+          case 'status':
+            appendLog('\n--- ' + (ev.message || ev.step) + ' ---\n');
+            break;
+          case 'done':
+            appendLog('\n' + (ev.ok ? 'Setup complete!' : 'Setup finished with errors.') + '\n');
+            refreshStatus();
+            break;
+          case 'error':
+            appendLog('\nError: ' + (ev.message || 'unknown') + '\n');
+            break;
+        }
+      }).catch(function (e) {
+        appendLog('\nStream error: ' + String(e) + '\n');
+      });
+    } else {
+      appendLog('Running...\n');
+
+      fetch('/setup/api/run', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (res) {
+        return res.text();
+      }).then(function (text) {
+        var j;
+        try { j = JSON.parse(text); } catch (_e) { j = { ok: false, output: text }; }
+        appendLog(j.output || JSON.stringify(j, null, 2));
+        return refreshStatus();
+      }).catch(function (e) {
+        appendLog('\nError: ' + String(e) + '\n');
+      });
+    }
   };
 
   // Update model config on a running instance
@@ -108,7 +199,8 @@
       return;
     }
     var isOpenRouter = subagentModel.indexOf('openrouter/') === 0;
-    logEl.textContent = 'Updating model config...\n';
+    logEl.innerHTML = '';
+    appendLog('Updating model config...\n');
     fetch('/setup/api/update-models', {
       method: 'POST',
       credentials: 'same-origin',
@@ -119,10 +211,10 @@
       })
     }).then(function (res) { return res.json(); })
       .then(function (j) {
-        logEl.textContent += (j.output || JSON.stringify(j, null, 2)) + '\n';
-        if (j.ok) logEl.textContent += '\n✓ Model config updated. Gateway restarted.\n';
+        appendLog((j.output || JSON.stringify(j, null, 2)) + '\n');
+        if (j.ok) appendLog('\n✓ Model config updated. Gateway restarted.\n');
       })
-      .catch(function (e) { logEl.textContent += 'Error: ' + String(e) + '\n'; });
+      .catch(function (e) { appendLog('Error: ' + String(e) + '\n'); });
   };
 
   // Pairing approve helper
@@ -138,25 +230,26 @@
       }
       var code = prompt('Enter pairing code (e.g. 3EY4PUYS):');
       if (!code) return;
-      logEl.textContent += '\nApproving pairing for ' + channel + '...\n';
+      appendLog('\nApproving pairing for ' + channel + '...\n');
       fetch('/setup/api/pairing/approve', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ channel: channel, code: code.trim() })
       }).then(function (r) { return r.text(); })
-        .then(function (t) { logEl.textContent += t + '\n'; })
-        .catch(function (e) { logEl.textContent += 'Error: ' + String(e) + '\n'; });
+        .then(function (t) { appendLog(t + '\n'); })
+        .catch(function (e) { appendLog('Error: ' + String(e) + '\n'); });
     };
   }
 
   document.getElementById('reset').onclick = function () {
     if (!confirm('Reset setup? This deletes the config file so onboarding can run again.')) return;
-    logEl.textContent = 'Resetting...\n';
+    logEl.innerHTML = '';
+    appendLog('Resetting...\n');
     fetch('/setup/api/reset', { method: 'POST', credentials: 'same-origin' })
       .then(function (res) { return res.text(); })
-      .then(function (t) { logEl.textContent += t + '\n'; return refreshStatus(); })
-      .catch(function (e) { logEl.textContent += 'Error: ' + String(e) + '\n'; });
+      .then(function (t) { appendLog(t + '\n'); return refreshStatus(); })
+      .catch(function (e) { appendLog('Error: ' + String(e) + '\n'); });
   };
 
   refreshStatus();

@@ -87,6 +87,17 @@ const OPENCLAW_ENTRY =
   process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
 
+// Auth choices that require an interactive OAuth device-code flow.
+const OAUTH_AUTH_CHOICES = new Set([
+  "openai-codex",
+  "codex-cli",
+  "claude-cli",
+  "google-antigravity",
+  "google-gemini-cli",
+  "github-copilot",
+  "qwen-portal",
+]);
+
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
 }
@@ -455,13 +466,14 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     openclawVersion: version.output.trim(),
     channelsAddHelp: channelsHelp.output,
     authGroups,
+    oauthAuthChoices: [...OAUTH_AUTH_CHOICES],
   });
 });
 
-function buildOnboardArgs(payload) {
+function buildOnboardArgs(payload, opts = {}) {
   const args = [
     "onboard",
-    "--non-interactive",
+    ...(opts.interactive ? [] : ["--non-interactive"]),
     "--accept-risk",
     "--json",
     "--no-install-daemon",
@@ -538,6 +550,192 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
+function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
+  return new Promise((resolve) => {
+    const proc = childProcess.spawn(cmd, args, {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: STATE_DIR,
+        OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      },
+    });
+
+    let timer;
+    if (timeoutMs) {
+      timer = setTimeout(() => {
+        try { proc.kill("SIGTERM"); } catch {}
+      }, timeoutMs);
+    }
+
+    if (signal) {
+      const onAbort = () => {
+        try { proc.kill("SIGTERM"); } catch {}
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      proc.on("close", () => signal.removeEventListener("abort", onAbort));
+    }
+
+    proc.stdout?.on("data", (d) => onData?.(d.toString("utf8")));
+    proc.stderr?.on("data", (d) => onData?.(d.toString("utf8")));
+
+    proc.on("error", (err) => {
+      onData?.(`\n[spawn error] ${String(err)}\n`);
+      clearTimeout(timer);
+      resolve({ code: 127 });
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? 0 });
+    });
+  });
+}
+
+let onboardInProgress = false;
+
+app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
+  if (onboardInProgress) {
+    return res.status(409).json({ ok: false, error: "Setup is already running" });
+  }
+
+  try {
+    if (isConfigured()) {
+      await ensureGatewayRunning();
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.write(JSON.stringify({ type: "log", text: "Already configured.\nUse Reset setup if you want to rerun onboarding.\n" }) + "\n");
+      res.write(JSON.stringify({ type: "done", ok: true }) + "\n");
+      return res.end();
+    }
+
+    onboardInProgress = true;
+
+    const ac = new AbortController();
+    req.on("close", () => ac.abort());
+
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+
+    function writeLine(obj) {
+      if (!res.writableEnded) res.write(JSON.stringify(obj) + "\n");
+    }
+
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+    const payload = req.body || {};
+    const interactive = OAUTH_AUTH_CHOICES.has(payload.authChoice);
+    const onboardArgs = buildOnboardArgs(payload, { interactive });
+    const timeoutMs = interactive ? 180_000 : 60_000;
+
+    writeLine({ type: "status", step: "onboard", message: "Running onboard..." });
+
+    const onboard = await runCmdStreaming(OPENCLAW_NODE, clawArgs(onboardArgs), {
+      timeoutMs,
+      signal: ac.signal,
+      onData(chunk) {
+        writeLine({ type: "log", text: chunk });
+      },
+    });
+
+    const ok = onboard.code === 0 && isConfigured();
+    if (!ok) {
+      writeLine({ type: "error", message: `Onboard failed (exit code ${onboard.code})` });
+      onboardInProgress = false;
+      return res.end();
+    }
+
+    // Post-onboard steps (same as /setup/api/run)
+    writeLine({ type: "status", step: "token-sync", message: "Syncing gateway token..." });
+
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.mode", "local"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.mode", "token"]));
+    const setTokenResult = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
+    if (setTokenResult.code !== 0) {
+      writeLine({ type: "log", text: `[WARNING] Failed to set gateway token: ${setTokenResult.output}\n` });
+    } else {
+      writeLine({ type: "log", text: "[token-sync] Gateway token synced successfully\n" });
+    }
+
+    writeLine({ type: "status", step: "config", message: "Applying gateway config..." });
+
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']));
+
+    // OpenRouter fallback
+    if (payload.authChoice === "openrouter-api-key") {
+      const orResult = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "models.providers.openrouter", JSON.stringify({ baseUrl: "https://openrouter.ai/api/v1", api: "openai" })]));
+      writeLine({ type: "log", text: `[openrouter-fallback] exit=${orResult.code}\n` });
+    }
+
+    // Sub-agent model
+    if (payload.subagentModel?.trim()) {
+      const saResult = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.subagents.model", payload.subagentModel.trim()]));
+      writeLine({ type: "log", text: `[subagent-model] exit=${saResult.code}\n` });
+    }
+
+    // Channel setup
+    writeLine({ type: "status", step: "channels", message: "Configuring channels..." });
+
+    const channelsHelp = await runCmd(OPENCLAW_NODE, clawArgs(["channels", "add", "--help"]));
+    const helpText = channelsHelp.output || "";
+    const supports = (name) => helpText.includes(name);
+
+    if (payload.telegramToken?.trim()) {
+      if (!supports("telegram")) {
+        writeLine({ type: "log", text: "[telegram] skipped (unsupported in this build)\n" });
+      } else {
+        const cfgObj = { enabled: true, dmPolicy: "pairing", botToken: payload.telegramToken.trim(), groupPolicy: "allowlist", streamMode: "partial" };
+        const set = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "channels.telegram", JSON.stringify(cfgObj)]));
+        writeLine({ type: "log", text: `[telegram config] exit=${set.code}\n` });
+      }
+    }
+
+    if (payload.discordToken?.trim()) {
+      if (!supports("discord")) {
+        writeLine({ type: "log", text: "[discord] skipped (unsupported in this build)\n" });
+      } else {
+        const cfgObj = { enabled: true, token: payload.discordToken.trim(), groupPolicy: "allowlist", dm: { policy: "pairing" } };
+        const set = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "channels.discord", JSON.stringify(cfgObj)]));
+        writeLine({ type: "log", text: `[discord config] exit=${set.code}\n` });
+      }
+    }
+
+    if (payload.slackBotToken?.trim() || payload.slackAppToken?.trim()) {
+      if (!supports("slack")) {
+        writeLine({ type: "log", text: "[slack] skipped (unsupported in this build)\n" });
+      } else {
+        const cfgObj = { enabled: true, botToken: payload.slackBotToken?.trim() || undefined, appToken: payload.slackAppToken?.trim() || undefined };
+        const set = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "channels.slack", JSON.stringify(cfgObj)]));
+        writeLine({ type: "log", text: `[slack config] exit=${set.code}\n` });
+      }
+    }
+
+    // Restart gateway
+    writeLine({ type: "status", step: "gateway", message: "Starting gateway..." });
+    await restartGateway();
+
+    writeLine({ type: "done", ok: true });
+    onboardInProgress = false;
+    res.end();
+  } catch (err) {
+    console.error("[/setup/api/run-stream] error:", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ ok: false, error: String(err) });
+    }
+    try {
+      res.write(JSON.stringify({ type: "error", message: String(err) }) + "\n");
+    } catch {}
+    onboardInProgress = false;
+    res.end();
+  }
+});
+
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   try {
     if (isConfigured()) {
@@ -553,7 +751,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
     const payload = req.body || {};
-    const onboardArgs = buildOnboardArgs(payload);
+    const onboardArgs = buildOnboardArgs(payload, { interactive: false });
 
     // DIAGNOSTIC: Log token we're passing to onboard
     console.log(`[onboard] ========== TOKEN DIAGNOSTIC START ==========`);

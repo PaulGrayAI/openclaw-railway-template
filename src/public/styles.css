@@ -102,6 +102,15 @@ a:hover {
   color: #ff4d4d;
 }
 
+pre a {
+  color: #00e5cc;
+  text-decoration: underline;
+}
+
+pre a:hover {
+  color: #ff4d4d;
+}
+
 .muted {
   color: #8892b0;
 }
