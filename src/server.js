@@ -456,6 +456,28 @@ app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
   // Clean up
   try { fs.rmSync(configPath(), { force: true }); } catch {}
 
+  // Step 5: Search openclaw dist for OAuth-related strings
+  try {
+    const { execSync } = childProcess;
+    const grepResults = {};
+    for (const pattern of ["device_authorization", "device/code", "client_id", "openai-codex", "chatgpt.com/auth", "auth0.openai.com", "login.chatgpt.com"]) {
+      try {
+        const out = execSync(`grep -r -l "${pattern}" /openclaw/dist/ 2>/dev/null | head -5`, { encoding: "utf8", timeout: 5000 });
+        if (out.trim()) {
+          grepResults[pattern] = out.trim().split("\n");
+          // Get context around the match
+          try {
+            const ctx = execSync(`grep -r -n "${pattern}" /openclaw/dist/ 2>/dev/null | head -5`, { encoding: "utf8", timeout: 5000 });
+            grepResults[pattern + "_context"] = ctx.trim().slice(0, 500);
+          } catch {}
+        }
+      } catch {}
+    }
+    results["oauth-source-grep"] = grepResults;
+  } catch (e) {
+    results["oauth-source-grep"] = { error: String(e) };
+  }
+
   res.json(results);
 });
 
