@@ -155,9 +155,9 @@ async function openaiDeviceCodeFlow({ onStatus, signal }) {
         continue;
       }
 
-      if (pollResp.ok && pollData?.code) {
-        authCode = pollData.code;
-        codeVerifier = pollData.code_verifier;
+      if (pollResp.ok && (pollData?.authorization_code || pollData?.code)) {
+        authCode = pollData.authorization_code || pollData.code;
+        codeVerifier = pollData.code_verifier || pollData.code_challenge;
         onStatus({ type: "authorized" });
         break;
       }
