@@ -303,7 +303,7 @@ async function startGateway() {
   );
   await runCmd(
     OPENCLAW_NODE,
-    clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.write","operator.approvals","operator.pairing"]']),
+    clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"]']),
   );
 
   console.log(`[gateway] token sync complete`);
@@ -928,7 +928,7 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]));
     // Grant full operator scopes to insecure auth (needed for Control UI chat to work)
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.write","operator.approvals","operator.pairing"]']));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"]']));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']));
 
     // OpenRouter fallback
@@ -1133,7 +1133,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       // Grant full operator scopes to insecure auth (fixes "missing scope: operator.write")
       await runCmd(
         OPENCLAW_NODE,
-        clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.write","operator.approvals","operator.pairing"]']),
+        clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"]']),
       );
 
       // Trust the loopback proxy so X-Forwarded-* headers are honoured
