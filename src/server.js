@@ -356,11 +356,28 @@ async function startGateway() {
         const existing = JSON.parse(fs.readFileSync(dstPath, "utf8"));
         if (existing.version === 1 && existing.profiles) dst = existing;
       } catch {}
-      // Merge profiles from source into destination
-      const srcProfiles = src.version === 1 ? (src.profiles || {}) : {};
+      // Merge profiles from source into destination (handle both v1 and flat formats)
+      let srcProfiles = {};
+      if (src.version === 1 && src.profiles) {
+        srcProfiles = src.profiles;
+      } else {
+        // Flat format: top-level keys like "openai-codex:default" are profile entries
+        for (const [key, val] of Object.entries(src)) {
+          if (key !== "version" && val && typeof val === "object" && val.provider) {
+            // Convert flat format field names to v1 format if needed
+            srcProfiles[key] = {
+              type: val.type || "oauth",
+              provider: val.provider,
+              access: val.access || val.accessToken,
+              refresh: val.refresh || val.refreshToken,
+              expires: val.expires || val.expiresAt,
+            };
+          }
+        }
+      }
       let merged = false;
       for (const [key, profile] of Object.entries(srcProfiles)) {
-        if (profile && profile.provider) {
+        if (profile && (profile.provider || profile.access)) {
           dst.profiles[key] = profile;
           merged = true;
         }
@@ -368,6 +385,8 @@ async function startGateway() {
       if (merged) {
         fs.writeFileSync(dstPath, JSON.stringify(dst, null, 2));
         console.log(`[gateway] Merged auth profiles to agent auth dir`);
+      } else {
+        console.log(`[gateway] No auth profiles to merge (src keys: ${Object.keys(src).join(",")})`);
       }
     }
   } catch (err) {
