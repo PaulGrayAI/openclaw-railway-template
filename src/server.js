@@ -349,9 +349,9 @@ async function startGateway() {
     const src = path.join(STATE_DIR, f);
     const dst = path.join(agentAuthDir, f);
     try {
-      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+      if (fs.existsSync(src)) {
         fs.copyFileSync(src, dst);
-        console.log(`[gateway] Copied ${f} to agent auth dir`);
+        console.log(`[gateway] Synced ${f} to agent auth dir`);
       }
     } catch (err) {
       console.warn(`[gateway] Could not copy ${f} to agent dir: ${err.message}`);
