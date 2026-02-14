@@ -707,48 +707,91 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
 
     const payload = req.body || {};
     const interactive = OAUTH_AUTH_CHOICES.has(payload.authChoice);
-    const onboardArgs = buildOnboardArgs(payload, { interactive });
-    const timeoutMs = interactive ? 180_000 : 60_000;
 
-    const fullArgs = clawArgs(onboardArgs);
-    const safeArgs = fullArgs.map((a) =>
-      a === OPENCLAW_GATEWAY_TOKEN ? a.slice(0, 8) + "..." : a,
-    );
-    console.log(`[onboard-stream] command: ${OPENCLAW_NODE} ${safeArgs.join(" ")}`);
-    console.log(`[onboard-stream] interactive=${interactive} timeoutMs=${timeoutMs}`);
+    if (interactive) {
+      // --- Two-step OAuth flow ---
+      // Step 1: Create base config with --auth-choice skip
+      writeLine({ type: "status", step: "onboard", message: "Creating base configuration..." });
+      const skipArgs = buildOnboardArgs({ ...payload, authChoice: "skip" }, { interactive: false });
+      const step1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs(skipArgs), {
+        timeoutMs: 30_000,
+        signal: ac.signal,
+        onData(chunk) { writeLine({ type: "log", text: chunk }); },
+      });
 
-    writeLine({ type: "status", step: "onboard", message: "Running onboard..." });
-    writeLine({ type: "log", text: `[debug] interactive=${interactive} args: ${safeArgs.join(" ")}\n` });
+      if (step1.code !== 0 || !isConfigured()) {
+        writeLine({ type: "error", message: `Base config creation failed (exit code ${step1.code})` });
+        onboardInProgress = false;
+        return res.end();
+      }
+      writeLine({ type: "log", text: "Base config created successfully.\n" });
 
-    let capturedOutput = "";
-    const onboard = await runCmdStreaming(OPENCLAW_NODE, fullArgs, {
-      timeoutMs,
-      signal: ac.signal,
-      usePty: interactive,
-      extraEnv: interactive ? { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" } : {},
-      onData(chunk) {
-        capturedOutput += chunk;
-        writeLine({ type: "log", text: chunk });
-      },
-    });
+      // Step 2: Run OAuth via models auth login (with PTY for TUI)
+      writeLine({ type: "status", step: "oauth", message: `Starting ${payload.authChoice} OAuth flow...` });
+      writeLine({ type: "log", text: "A device code URL should appear below. Open it in your browser to authorize.\n" });
 
-    console.log(`[onboard-stream] exit code=${onboard.code} killedByTimeout=${onboard.killedByTimeout} outputLen=${capturedOutput.length}`);
-    if (capturedOutput.length > 0) {
-      console.log(`[onboard-stream] output: ${capturedOutput.slice(0, 2000)}`);
-    }
+      let authOutput = "";
+      const authResult = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+        "models", "auth", "login",
+        "--provider", payload.authChoice,
+        "--set-default",
+      ]), {
+        timeoutMs: 180_000,
+        signal: ac.signal,
+        usePty: true,
+        extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" },
+        onData(chunk) {
+          authOutput += chunk;
+          // Strip ANSI escape sequences for cleaner display
+          const clean = chunk.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9;]*[a-zA-Z]/g, "").trim();
+          if (clean) writeLine({ type: "log", text: clean + "\n" });
+        },
+      });
 
-    if (onboard.killedByTimeout) {
-      writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
-      onboardInProgress = false;
-      return res.end();
-    }
+      if (authResult.killedByTimeout) {
+        writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
+        onboardInProgress = false;
+        return res.end();
+      }
 
-    const ok = onboard.code === 0 && isConfigured();
-    if (!ok) {
-      const detail = capturedOutput.trim() ? ` — ${capturedOutput.trim().slice(-200)}` : " — no output from CLI";
-      writeLine({ type: "error", message: `Onboard failed (exit code ${onboard.code})${detail}` });
-      onboardInProgress = false;
-      return res.end();
+      if (authResult.code !== 0) {
+        const detail = authOutput.trim() ? ` — ${authOutput.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").trim().slice(-300)}` : "";
+        writeLine({ type: "error", message: `OAuth login failed (exit code ${authResult.code})${detail}` });
+        onboardInProgress = false;
+        return res.end();
+      }
+
+      writeLine({ type: "log", text: "OAuth login completed successfully.\n" });
+    } else {
+      // --- Standard non-interactive flow ---
+      const onboardArgs = buildOnboardArgs(payload, { interactive: false });
+      const timeoutMs = 60_000;
+
+      writeLine({ type: "status", step: "onboard", message: "Running onboard..." });
+
+      let capturedOutput = "";
+      const onboard = await runCmdStreaming(OPENCLAW_NODE, clawArgs(onboardArgs), {
+        timeoutMs,
+        signal: ac.signal,
+        onData(chunk) {
+          capturedOutput += chunk;
+          writeLine({ type: "log", text: chunk });
+        },
+      });
+
+      if (onboard.killedByTimeout) {
+        writeLine({ type: "error", message: "Onboard timed out." });
+        onboardInProgress = false;
+        return res.end();
+      }
+
+      const ok = onboard.code === 0 && isConfigured();
+      if (!ok) {
+        const detail = capturedOutput.trim() ? ` — ${capturedOutput.trim().slice(-200)}` : " — no output from CLI";
+        writeLine({ type: "error", message: `Onboard failed (exit code ${onboard.code})${detail}` });
+        onboardInProgress = false;
+        return res.end();
+      }
     }
 
     // Post-onboard steps (same as /setup/api/run)
