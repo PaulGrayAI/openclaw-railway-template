@@ -1431,6 +1431,13 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
   let config = null;
   try { config = JSON.parse(fs.readFileSync(configPath(), "utf8")); } catch {}
 
+  // Search gateway source for agent model config
+  let agentModelGrep = null;
+  try {
+    const { execSync } = childProcess;
+    agentModelGrep = execSync(`grep -n "agent model" /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null | head -5`, { encoding: "utf8", timeout: 5000 }).trim();
+  } catch {}
+
   res.json({
     wrapper: {
       node: process.version,
@@ -1451,6 +1458,10 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       channelsAddHelpIncludesTelegram: help.output.includes("telegram"),
     },
     gatewayConfig: config?.gateway || null,
+    agentsConfig: config?.agents || null,
+    modelsConfig: config?.models || null,
+    agentModelGrep,
+    fullConfigKeys: config ? Object.keys(config) : null,
   });
 });
 
