@@ -144,24 +144,26 @@ async function openaiDeviceCodeFlow({ onStatus, signal }) {
         signal,
       });
 
+      // Read body once to avoid double-consume
+      const pollBody = await pollResp.text();
+      let pollData;
+      try { pollData = JSON.parse(pollBody); } catch {}
+
       if (pollResp.status === 403 || pollResp.status === 404) {
         // Still waiting for user to authorize
         onStatus({ type: "polling" });
         continue;
       }
 
-      if (pollResp.ok) {
-        const pollData = await pollResp.json();
-        if (pollData.code) {
-          authCode = pollData.code;
-          codeVerifier = pollData.code_verifier;
-          break;
-        }
+      if (pollResp.ok && pollData?.code) {
+        authCode = pollData.code;
+        codeVerifier = pollData.code_verifier;
+        onStatus({ type: "authorized" });
+        break;
       }
 
-      // Other error — log and keep polling
-      const errText = await pollResp.text().catch(() => "");
-      onStatus({ type: "poll_error", status: pollResp.status, body: errText });
+      // 200 without auth code, or other status — log details and keep polling
+      onStatus({ type: "poll_status", status: pollResp.status, body: pollBody.slice(0, 300) });
     } catch (err) {
       if (signal?.aborted) throw err;
       onStatus({ type: "poll_error", message: String(err) });
@@ -928,7 +930,11 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
               } else if (evt.type === "polling") {
                 // silent — just keep waiting
               } else if (evt.type === "poll_error") {
-                writeLine({ type: "log", text: `[poll] ${evt.message || `status ${evt.status}`}\n` });
+                writeLine({ type: "log", text: `[poll error] ${evt.message || `status ${evt.status}`}\n` });
+              } else if (evt.type === "poll_status") {
+                writeLine({ type: "log", text: `[poll] status ${evt.status}: ${evt.body}\n` });
+              } else if (evt.type === "authorized") {
+                writeLine({ type: "log", text: "Authorization received from OpenAI!\n" });
               }
             },
           });
@@ -1469,11 +1475,13 @@ app.post("/setup/api/pairing/approve", requireSetupAuth, async (req, res) => {
 app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
   // Minimal reset: delete the config file so /setup can rerun.
   // Keep credentials/sessions/workspace by default.
+  // Also clear the in-progress flag in case a previous run got stuck.
+  onboardInProgress = false;
   try {
     fs.rmSync(configPath(), { force: true });
     res
       .type("text/plain")
-      .send("OK - deleted config file. You can rerun setup now.");
+      .send("OK - deleted config file and cleared in-progress flag. You can rerun setup now.");
   } catch (err) {
     res.status(500).type("text/plain").send(String(err));
   }
