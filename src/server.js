@@ -442,6 +442,40 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   res.sendFile(path.join(process.cwd(), "src", "public", "setup.html"));
 });
 
+// Temporary diagnostic: grep openclaw dist for scope-related code
+app.get("/setup/api/grep-scopes", requireSetupAuth, async (_req, res) => {
+  const { execSync } = childProcess;
+  const results = {};
+  const patterns = [
+    "operator.read",
+    "operator.write",
+    "operator\\.admin.*operator\\.approvals",
+    "scopes.*operator",
+    "insecureScopes",
+    "defaultScopes",
+    "operatorScopes",
+    "allowedScopes",
+    "grantedScopes",
+  ];
+  for (const p of patterns) {
+    try {
+      const out = execSync(`grep -r -n "${p}" /openclaw/dist/ 2>/dev/null | head -10`, { encoding: "utf8", timeout: 10000 });
+      if (out.trim()) results[p] = out.trim().split("\n").map(l => l.slice(0, 300));
+    } catch {}
+  }
+  // Also check the UI assets
+  try {
+    const out = execSync(`find /openclaw/dist -name "*.html" -o -name "*.js" | head -20`, { encoding: "utf8", timeout: 5000 });
+    results["ui-files"] = out.trim().split("\n");
+  } catch {}
+  // Check control UI specifically
+  try {
+    const out = execSync(`grep -r -n "operator" /openclaw/dist/ui/ 2>/dev/null | head -20`, { encoding: "utf8", timeout: 10000 });
+    if (out.trim()) results["ui-operator"] = out.trim().split("\n").map(l => l.slice(0, 300));
+  } catch {}
+  res.json(results);
+});
+
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   const version = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
   const channelsHelp = await runCmd(
