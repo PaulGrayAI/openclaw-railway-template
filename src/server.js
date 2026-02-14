@@ -353,45 +353,65 @@ app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
   res.type("text/plain").send(help.output);
 });
 
-// Diagnostic: test onboard with various flag combinations
+// Diagnostic: test onboard with various flag combinations (all non-interactive to avoid hanging)
 app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
   const authChoice = req.query.auth || "openai-codex";
   const results = {};
 
-  // Test 1: non-interactive + json (original flags)
-  const t1 = await runCmd(OPENCLAW_NODE, clawArgs([
+  // Test 1: non-interactive + json with openai-codex
+  const t1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
     "onboard", "--non-interactive", "--json", "--accept-risk",
     "--no-install-daemon", "--skip-health",
     "--workspace", WORKSPACE_DIR,
     "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
     "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
     "--flow", "quickstart", "--auth-choice", authChoice,
-  ]));
-  results["non-interactive+json"] = { code: t1.code, output: t1.output };
+  ]), { timeoutMs: 15_000, onData() {} });
+  results["ni+json+codex"] = { code: t1.code, timeout: t1.killedByTimeout };
 
-  // Test 2: interactive + json (no --non-interactive)
-  const t2 = await runCmd(OPENCLAW_NODE, clawArgs([
-    "onboard", "--json", "--accept-risk",
-    "--no-install-daemon", "--skip-health",
-    "--workspace", WORKSPACE_DIR,
-    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
-    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
-    "--flow", "quickstart", "--auth-choice", authChoice,
-  ]));
-  results["interactive+json"] = { code: t2.code, output: t2.output };
+  // Check what config was created
+  try {
+    const cfg = fs.readFileSync(configPath(), "utf8");
+    results["ni+json+codex"].configCreated = true;
+    results["ni+json+codex"].configSnippet = cfg.slice(0, 500);
+  } catch { results["ni+json+codex"].configCreated = false; }
+  try { fs.rmSync(configPath(), { force: true }); } catch {}
 
-  // Test 3: non-interactive + json with auth-choice=skip
-  const t3 = await runCmd(OPENCLAW_NODE, clawArgs([
+  // Test 2: non-interactive + json with skip
+  const t2 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
     "onboard", "--non-interactive", "--json", "--accept-risk",
     "--no-install-daemon", "--skip-health",
     "--workspace", WORKSPACE_DIR,
     "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
     "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
     "--flow", "quickstart", "--auth-choice", "skip",
-  ]));
-  results["non-interactive+json+skip"] = { code: t3.code, output: t3.output };
+  ]), { timeoutMs: 15_000, onData() {} });
+  results["ni+json+skip"] = { code: t2.code, timeout: t2.killedByTimeout };
 
-  // Clean up any config created by test 3
+  try {
+    const cfg = fs.readFileSync(configPath(), "utf8");
+    results["ni+json+skip"].configCreated = true;
+    results["ni+json+skip"].configSnippet = cfg.slice(0, 500);
+  } catch { results["ni+json+skip"].configCreated = false; }
+  try { fs.rmSync(configPath(), { force: true }); } catch {}
+
+  // Test 3: non-interactive + json + PTY with openai-codex
+  let t3out = "";
+  const t3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+    "onboard", "--non-interactive", "--json", "--accept-risk",
+    "--no-install-daemon", "--skip-health",
+    "--workspace", WORKSPACE_DIR,
+    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
+    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
+    "--flow", "quickstart", "--auth-choice", authChoice,
+  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color" }, onData(d) { t3out += d; } });
+  results["ni+json+pty+codex"] = { code: t3.code, timeout: t3.killedByTimeout, output: t3out.slice(0, 1000) };
+
+  try {
+    const cfg = fs.readFileSync(configPath(), "utf8");
+    results["ni+json+pty+codex"].configCreated = true;
+    results["ni+json+pty+codex"].configSnippet = cfg.slice(0, 500);
+  } catch { results["ni+json+pty+codex"].configCreated = false; }
   try { fs.rmSync(configPath(), { force: true }); } catch {}
 
   res.json(results);
