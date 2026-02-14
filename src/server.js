@@ -860,7 +860,8 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
     onboardInProgress = true;
 
     const ac = new AbortController();
-    req.on("close", () => ac.abort());
+    // Use res.on("close") — req.on("close") fires after POST body is consumed, not on disconnect
+    res.on("close", () => { if (!res.writableFinished) ac.abort(); });
 
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("X-Accel-Buffering", "no");
