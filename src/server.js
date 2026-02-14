@@ -362,6 +362,38 @@ app.get("/setup/api/cli-run", requireSetupAuth, async (req, res) => {
   res.type("text/plain").send(`exit=${result.code}\n\n${result.output}`);
 });
 
+// List available extensions from the built openclaw source
+app.get("/setup/api/extensions", requireSetupAuth, (_req, res) => {
+  const results = {};
+  const extDir = "/openclaw/extensions";
+  try {
+    const entries = fs.readdirSync(extDir, { withFileTypes: true });
+    results.extensions = entries.filter(e => e.isDirectory()).map(e => {
+      const pkgPath = path.join(extDir, e.name, "package.json");
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        return { name: e.name, pkgName: pkg.name, description: pkg.description };
+      } catch {
+        return { name: e.name };
+      }
+    });
+  } catch (err) {
+    results.error = String(err);
+  }
+  // Also check /openclaw/dist/extensions
+  try {
+    const entries = fs.readdirSync("/openclaw/dist/extensions", { withFileTypes: true });
+    results.distExtensions = entries.filter(e => e.isDirectory()).map(e => e.name);
+  } catch {}
+  // Check plugins dir
+  try {
+    const pluginsDir = path.join(STATE_DIR, "plugins");
+    const entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
+    results.installedPlugins = entries.map(e => e.name);
+  } catch {}
+  res.json(results);
+});
+
 app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
   const cmds = (req.query.cmd || "").split(",").filter(Boolean);
   if (cmds.length === 0) cmds.push("");
