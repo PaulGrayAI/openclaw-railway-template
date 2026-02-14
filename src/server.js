@@ -98,6 +98,108 @@ const OAUTH_AUTH_CHOICES = new Set([
   "qwen-portal",
 ]);
 
+// --- OpenAI Codex OAuth Device-Code Flow (direct implementation) ---
+// This bypasses the CLI's TUI which doesn't work in headless Docker containers.
+const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const OPENAI_AUTH_BASE = "https://auth.openai.com";
+
+async function openaiDeviceCodeFlow({ onStatus, signal }) {
+  // Step 1: Request device code
+  const userCodeResp = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/deviceauth/usercode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: OPENAI_CLIENT_ID }),
+    signal,
+  });
+  if (!userCodeResp.ok) {
+    const txt = await userCodeResp.text();
+    throw new Error(`Device code request failed (${userCodeResp.status}): ${txt}`);
+  }
+  const deviceData = await userCodeResp.json();
+  const { user_code, device_auth_id, verification_uri, verification_uri_complete, interval: pollInterval } = deviceData;
+
+  onStatus({
+    type: "device_code",
+    userCode: user_code,
+    verificationUrl: verification_uri_complete || verification_uri || `${OPENAI_AUTH_BASE}/codex/device`,
+    expiresIn: 900,
+  });
+
+  // Step 2: Poll for authorization
+  const intervalMs = (pollInterval || 5) * 1000;
+  const maxWaitMs = 15 * 60 * 1000; // 15 minutes
+  const deadline = Date.now() + maxWaitMs;
+  let authCode = null;
+  let codeVerifier = null;
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error("OAuth flow aborted");
+    await sleep(intervalMs);
+
+    try {
+      const pollResp = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/deviceauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_auth_id, user_code }),
+        signal,
+      });
+
+      if (pollResp.status === 403 || pollResp.status === 404) {
+        // Still waiting for user to authorize
+        onStatus({ type: "polling" });
+        continue;
+      }
+
+      if (pollResp.ok) {
+        const pollData = await pollResp.json();
+        if (pollData.code) {
+          authCode = pollData.code;
+          codeVerifier = pollData.code_verifier;
+          break;
+        }
+      }
+
+      // Other error — log and keep polling
+      const errText = await pollResp.text().catch(() => "");
+      onStatus({ type: "poll_error", status: pollResp.status, body: errText });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      onStatus({ type: "poll_error", message: String(err) });
+    }
+  }
+
+  if (!authCode) {
+    throw new Error("Device code expired — user did not authorize within 15 minutes");
+  }
+
+  // Step 3: Exchange authorization code for tokens
+  const tokenResp = await fetch(`${OPENAI_AUTH_BASE}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: OPENAI_CLIENT_ID,
+      grant_type: "authorization_code",
+      code: authCode,
+      code_verifier: codeVerifier || "",
+      redirect_uri: `${OPENAI_AUTH_BASE}/deviceauth/callback`,
+    }),
+    signal,
+  });
+
+  if (!tokenResp.ok) {
+    const txt = await tokenResp.text();
+    throw new Error(`Token exchange failed (${tokenResp.status}): ${txt}`);
+  }
+
+  const tokens = await tokenResp.json();
+  return {
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+    expiresIn: tokens.expires_in,
+    expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+  };
+}
+
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
 }
@@ -431,27 +533,22 @@ app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
     return res.json(results);
   }
 
-  // Step 2: try setup-token with PTY
-  let step2out = "";
-  const step2 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "models", "auth", "setup-token", "--provider", provider,
-  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step2out += d; } });
-  results["setup-token-pty"] = { code: step2.code, timeout: step2.killedByTimeout, output: step2out.slice(0, 2000) };
-
-  // Step 3: minimal onboard with just --auth-choice (no other flags) + PTY
-  try { fs.rmSync(configPath(), { force: true }); } catch {}
-  let step3out = "";
-  const step3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "onboard", "--auth-choice", provider,
-  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step3out += d; } });
-  results["minimal-onboard-pty"] = { code: step3.code, timeout: step3.killedByTimeout, output: step3out.slice(0, 2000) };
-
-  // Step 4: try login-github-copilot style — check if there's a built-in for openai
-  let step4out = "";
-  const step4 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "models", "auth", "login", "--method", "oauth", "--provider", provider,
-  ]), { timeoutMs: 10_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step4out += d; } });
-  results["login-method-oauth-pty"] = { code: step4.code, timeout: step4.killedByTimeout, output: step4out.slice(0, 2000) };
+  // Step 2: Test direct OpenAI device code request (just get the code, don't wait for auth)
+  try {
+    const dcResp = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/deviceauth/usercode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: OPENAI_CLIENT_ID }),
+    });
+    const dcBody = await dcResp.text();
+    results["direct-device-code"] = {
+      status: dcResp.status,
+      ok: dcResp.ok,
+      body: dcBody.slice(0, 1000),
+    };
+  } catch (err) {
+    results["direct-device-code"] = { error: String(err) };
+  }
 
   // Clean up
   try { fs.rmSync(configPath(), { force: true }); } catch {}
@@ -806,39 +903,108 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
       }
       writeLine({ type: "log", text: "Base config created successfully.\n" });
 
-      // Step 2: Run OAuth via models auth login (with PTY for TUI)
-      writeLine({ type: "status", step: "oauth", message: `Starting ${payload.authChoice} OAuth flow...` });
-      writeLine({ type: "log", text: "A device code URL should appear below. Open it in your browser to authorize.\n" });
+      // Step 2: OAuth login
+      const useDirectDeviceCode = payload.authChoice === "openai-codex" || payload.authChoice === "codex-cli";
 
-      let authOutput = "";
-      const authResult = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-        "models", "auth", "login",
-        "--provider", payload.authChoice,
-        "--set-default",
-      ]), {
-        timeoutMs: 180_000,
-        signal: ac.signal,
-        usePty: true,
-        extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" },
-        onData(chunk) {
-          authOutput += chunk;
-          // Strip ANSI escape sequences for cleaner display
-          const clean = chunk.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9;]*[a-zA-Z]/g, "").trim();
-          if (clean) writeLine({ type: "log", text: clean + "\n" });
-        },
-      });
+      if (useDirectDeviceCode) {
+        // Direct OpenAI device-code flow — bypasses CLI TUI which doesn't work headlessly
+        writeLine({ type: "status", step: "oauth", message: "Starting OpenAI device code flow..." });
+        writeLine({ type: "log", text: "Requesting device code from OpenAI...\n" });
 
-      if (authResult.killedByTimeout) {
-        writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
-        onboardInProgress = false;
-        return res.end();
-      }
+        try {
+          const tokens = await openaiDeviceCodeFlow({
+            signal: ac.signal,
+            onStatus(evt) {
+              if (evt.type === "device_code") {
+                writeLine({ type: "log", text: `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` });
+                writeLine({ type: "log", text: `  Open this URL in your browser:\n` });
+                writeLine({ type: "log", text: `  ${evt.verificationUrl}\n\n` });
+                if (evt.userCode) {
+                  writeLine({ type: "log", text: `  Enter code: ${evt.userCode}\n` });
+                }
+                writeLine({ type: "log", text: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` });
+                writeLine({ type: "log", text: "Waiting for you to authorize in the browser...\n" });
+              } else if (evt.type === "polling") {
+                // silent — just keep waiting
+              } else if (evt.type === "poll_error") {
+                writeLine({ type: "log", text: `[poll] ${evt.message || `status ${evt.status}`}\n` });
+              }
+            },
+          });
 
-      if (authResult.code !== 0) {
-        const detail = authOutput.trim() ? ` — ${authOutput.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").trim().slice(-300)}` : "";
-        writeLine({ type: "error", message: `OAuth login failed (exit code ${authResult.code})${detail}` });
-        onboardInProgress = false;
-        return res.end();
+          writeLine({ type: "log", text: "Authorization received! Storing credentials...\n" });
+
+          // Write tokens to OpenClaw auth file
+          const authFilePath = path.join(STATE_DIR, "auth.json");
+          let authData = {};
+          try { authData = JSON.parse(fs.readFileSync(authFilePath, "utf8")); } catch {}
+          authData.openai = {
+            type: "oauth",
+            access: tokens.accessToken,
+            refresh: tokens.refreshToken,
+            expires: tokens.expiresAt,
+          };
+          fs.writeFileSync(authFilePath, JSON.stringify(authData, null, 2));
+          writeLine({ type: "log", text: `Credentials saved to ${authFilePath}\n` });
+
+          // Also write to auth-profiles.json (alternate location OpenClaw may check)
+          const authProfilesPath = path.join(STATE_DIR, "auth-profiles.json");
+          let profiles = {};
+          try { profiles = JSON.parse(fs.readFileSync(authProfilesPath, "utf8")); } catch {}
+          const profileKey = `openai-codex:default`;
+          profiles[profileKey] = {
+            provider: "openai-codex",
+            type: "oauth",
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            expiresAt: tokens.expiresAt,
+          };
+          fs.writeFileSync(authProfilesPath, JSON.stringify(profiles, null, 2));
+          writeLine({ type: "log", text: `Credentials also saved to ${authProfilesPath}\n` });
+
+          // Set default model provider via config
+          await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "models.defaultProvider", "openai-codex"]));
+          writeLine({ type: "log", text: "Default provider set to openai-codex\n" });
+
+        } catch (err) {
+          writeLine({ type: "error", message: `OpenAI OAuth failed: ${err.message}` });
+          onboardInProgress = false;
+          return res.end();
+        }
+      } else {
+        // Other OAuth providers — try models auth login with PTY
+        writeLine({ type: "status", step: "oauth", message: `Starting ${payload.authChoice} OAuth flow...` });
+        writeLine({ type: "log", text: "A device code URL should appear below. Open it in your browser to authorize.\n" });
+
+        let authOutput = "";
+        const authResult = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+          "models", "auth", "login",
+          "--provider", payload.authChoice,
+          "--set-default",
+        ]), {
+          timeoutMs: 180_000,
+          signal: ac.signal,
+          usePty: true,
+          extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" },
+          onData(chunk) {
+            authOutput += chunk;
+            const clean = chunk.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9;]*[a-zA-Z]/g, "").trim();
+            if (clean) writeLine({ type: "log", text: clean + "\n" });
+          },
+        });
+
+        if (authResult.killedByTimeout) {
+          writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
+          onboardInProgress = false;
+          return res.end();
+        }
+
+        if (authResult.code !== 0) {
+          const detail = authOutput.trim() ? ` — ${authOutput.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").trim().slice(-300)}` : "";
+          writeLine({ type: "error", message: `OAuth login failed (exit code ${authResult.code})${detail}` });
+          onboardInProgress = false;
+          return res.end();
+        }
       }
 
       writeLine({ type: "log", text: "OAuth login completed successfully.\n" });
