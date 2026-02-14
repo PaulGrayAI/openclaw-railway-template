@@ -463,6 +463,21 @@ app.get("/setup/api/grep-scopes", requireSetupAuth, async (_req, res) => {
       if (out.trim()) results[p] = out.trim().split("\n").map(l => l.slice(0, 300));
     } catch {}
   }
+  // Get context around the allowedScopes/pairedScopes check
+  try {
+    const out = execSync(`grep -n -B5 -A5 "pairedScopes" /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null | head -80`, { encoding: "utf8", timeout: 10000 });
+    if (out.trim()) results["pairedScopes-context"] = out.trim().split("\n").map(l => l.slice(0, 300));
+  } catch {}
+  // Find how scopes are set when dangerouslyDisableDeviceAuth is true
+  try {
+    const out = execSync(`grep -n -B3 -A10 "dangerouslyDisableDeviceAuth\\|allowInsecureAuth\\|sharedAuthOk" /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null | head -100`, { encoding: "utf8", timeout: 10000 });
+    if (out.trim()) results["insecure-auth-context"] = out.trim().split("\n").map(l => l.slice(0, 300));
+  } catch {}
+  // Find where scopes are first assigned to connections
+  try {
+    const out = execSync(`grep -n -B2 -A5 "scopes.*=.*\\[" /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null | head -60`, { encoding: "utf8", timeout: 10000 });
+    if (out.trim()) results["scope-assignment"] = out.trim().split("\n").map(l => l.slice(0, 300));
+  } catch {}
   // Also check the UI assets
   try {
     const out = execSync(`find /openclaw/dist -name "*.html" -o -name "*.js" | head -20`, { encoding: "utf8", timeout: 5000 });
