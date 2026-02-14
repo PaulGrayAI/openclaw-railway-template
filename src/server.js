@@ -938,8 +938,8 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
           // The --auth-choice skip onboard uses anthropic/claude-opus-4-6 as the default model,
           // which fails when using OpenAI Codex auth. Set the model to codex-1 (OpenAI Codex).
           await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "models.defaultProvider", "openai-codex"]));
-          await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.model", "codex-1"]));
-          writeLine({ type: "log", text: "Default provider set to openai-codex, model set to codex-1\n" });
+          await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.model.primary", "openai-codex/gpt-5.3-codex"]));
+          writeLine({ type: "log", text: "Default provider set to openai-codex, model set to openai-codex/gpt-5.3-codex\n" });
 
           // Copy auth profiles to the agent-specific directory so the gateway agent can find them.
           // The onboard --auth-choice skip doesn't create the agent auth store, so the gateway
@@ -1529,14 +1529,14 @@ app.post("/setup/api/update-models", requireSetupAuth, async (req, res) => {
     output += `[openrouter-fallback] exit=${r.code}\n${r.output || "(ok)"}\n`;
   }
 
-  // Update main agent model
+  // Update main agent model (config key: agents.defaults.model.primary)
   if (payload.agentModel?.trim()) {
     const r = await runCmd(
       OPENCLAW_NODE,
       clawArgs([
         "config",
         "set",
-        "agents.defaults.model",
+        "agents.defaults.model.primary",
         payload.agentModel.trim(),
       ]),
     );
