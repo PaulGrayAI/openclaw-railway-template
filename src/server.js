@@ -353,6 +353,13 @@ app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
   res.type("text/plain").send(help.output);
 });
 
+app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
+  const sub = req.query.cmd;
+  const args = sub ? [sub, "--help"] : ["--help"];
+  const help = await runCmd(OPENCLAW_NODE, clawArgs(args));
+  res.type("text/plain").send(`exit=${help.code}\n\n${help.output}`);
+});
+
 // Diagnostic: test onboard with various flag combinations (all non-interactive to avoid hanging)
 app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
   const authChoice = req.query.auth || "openai-codex";
