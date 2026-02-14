@@ -475,7 +475,7 @@ function buildOnboardArgs(payload, opts = {}) {
     "onboard",
     ...(opts.interactive ? [] : ["--non-interactive"]),
     "--accept-risk",
-    "--json",
+    ...(opts.interactive ? [] : ["--json"]),
     "--no-install-daemon",
     "--skip-health",
     "--workspace",
@@ -552,6 +552,7 @@ function runCmd(cmd, args, opts = {}) {
 
 function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
   return new Promise((resolve) => {
+    let killedByTimeout = false;
     const proc = childProcess.spawn(cmd, args, {
       env: {
         ...process.env,
@@ -563,6 +564,7 @@ function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
     let timer;
     if (timeoutMs) {
       timer = setTimeout(() => {
+        killedByTimeout = true;
         try { proc.kill("SIGTERM"); } catch {}
       }, timeoutMs);
     }
@@ -581,12 +583,12 @@ function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
     proc.on("error", (err) => {
       onData?.(`\n[spawn error] ${String(err)}\n`);
       clearTimeout(timer);
-      resolve({ code: 127 });
+      resolve({ code: 127, killedByTimeout: false });
     });
 
     proc.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? 0 });
+      resolve({ code: code ?? (killedByTimeout ? 124 : 1), killedByTimeout });
     });
   });
 }
@@ -639,6 +641,12 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
         writeLine({ type: "log", text: chunk });
       },
     });
+
+    if (onboard.killedByTimeout) {
+      writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
+      onboardInProgress = false;
+      return res.end();
+    }
 
     const ok = onboard.code === 0 && isConfigured();
     if (!ok) {
