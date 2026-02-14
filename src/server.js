@@ -550,17 +550,32 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
-function runCmdStreaming(cmd, args, { onData, timeoutMs, signal, extraEnv } = {}) {
+function shellEscape(s) {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function runCmdStreaming(cmd, args, { onData, timeoutMs, signal, extraEnv, usePty } = {}) {
   return new Promise((resolve) => {
     let killedByTimeout = false;
-    const proc = childProcess.spawn(cmd, args, {
-      env: {
-        ...process.env,
-        OPENCLAW_STATE_DIR: STATE_DIR,
-        OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
-        ...extraEnv,
-      },
-    });
+
+    const env = {
+      ...process.env,
+      OPENCLAW_STATE_DIR: STATE_DIR,
+      OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      ...extraEnv,
+    };
+
+    // When usePty is true, wrap the command in `script` to provide a real PTY.
+    // This is needed for CLIs that check process.stdout.isTTY (e.g. OAuth device-code flows).
+    let spawnCmd = cmd;
+    let spawnArgs = args;
+    if (usePty) {
+      const shellCmd = [cmd, ...args].map(shellEscape).join(" ");
+      spawnCmd = "script";
+      spawnArgs = ["-qfc", shellCmd, "/dev/null"];
+    }
+
+    const proc = childProcess.spawn(spawnCmd, spawnArgs, { env });
 
     let timer;
     if (timeoutMs) {
@@ -647,6 +662,7 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
     const onboard = await runCmdStreaming(OPENCLAW_NODE, fullArgs, {
       timeoutMs,
       signal: ac.signal,
+      usePty: interactive,
       extraEnv: interactive ? { TERM: "dumb", FORCE_COLOR: "0", NO_COLOR: "1" } : {},
       onData(chunk) {
         capturedOutput += chunk;
