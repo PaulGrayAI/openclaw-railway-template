@@ -340,6 +340,24 @@ async function startGateway() {
 
   console.log(`[gateway] token sync complete`);
 
+  // Ensure agent auth directory has credentials (copied from main state dir).
+  // The onboard --auth-choice skip flow doesn't populate agents/main/agent/,
+  // causing "No API key found" errors when the gateway agent tries to use an LLM.
+  const agentAuthDir = path.join(STATE_DIR, "agents", "main", "agent");
+  fs.mkdirSync(agentAuthDir, { recursive: true });
+  for (const f of ["auth-profiles.json", "auth.json"]) {
+    const src = path.join(STATE_DIR, f);
+    const dst = path.join(agentAuthDir, f);
+    try {
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        fs.copyFileSync(src, dst);
+        console.log(`[gateway] Copied ${f} to agent auth dir`);
+      }
+    } catch (err) {
+      console.warn(`[gateway] Could not copy ${f} to agent dir: ${err.message}`);
+    }
+  }
+
   const args = [
     "gateway",
     "run",
@@ -919,6 +937,24 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
           // Set default model provider via config
           await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "models.defaultProvider", "openai-codex"]));
           writeLine({ type: "log", text: "Default provider set to openai-codex\n" });
+
+          // Copy auth profiles to the agent-specific directory so the gateway agent can find them.
+          // The onboard --auth-choice skip doesn't create the agent auth store, so the gateway
+          // looks for credentials in agents/main/agent/ and fails with "No API key found".
+          const agentAuthDir = path.join(STATE_DIR, "agents", "main", "agent");
+          fs.mkdirSync(agentAuthDir, { recursive: true });
+          const agentAuthProfilesPath = path.join(agentAuthDir, "auth-profiles.json");
+          try {
+            fs.copyFileSync(authProfilesPath, agentAuthProfilesPath);
+            writeLine({ type: "log", text: `Credentials copied to ${agentAuthProfilesPath}\n` });
+          } catch (copyErr) {
+            writeLine({ type: "log", text: `[WARNING] Could not copy auth to agent dir: ${copyErr.message}\n` });
+          }
+          // Also copy auth.json
+          const agentAuthPath = path.join(agentAuthDir, "auth.json");
+          try {
+            fs.copyFileSync(authFilePath, agentAuthPath);
+          } catch {};
 
         } catch (err) {
           writeLine({ type: "error", message: `OpenAI OAuth failed: ${err.message}` });
