@@ -348,6 +348,11 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   res.sendFile(path.join(process.cwd(), "src", "public", "setup.html"));
 });
 
+app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
+  const help = await runCmd(OPENCLAW_NODE, clawArgs(["onboard", "--help"]));
+  res.type("text/plain").send(help.output);
+});
+
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   const version = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
   const channelsHelp = await runCmd(
@@ -475,7 +480,7 @@ function buildOnboardArgs(payload, opts = {}) {
     "onboard",
     ...(opts.interactive ? [] : ["--non-interactive"]),
     "--accept-risk",
-    ...(opts.interactive ? [] : ["--json"]),
+    "--json",
     "--no-install-daemon",
     "--skip-health",
     "--workspace",
