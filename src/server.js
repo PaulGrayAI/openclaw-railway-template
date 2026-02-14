@@ -1441,8 +1441,9 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
     try { authDiag.agentAuthProfiles = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "agents", "main", "agent", "auth-profiles.json"), "utf8")); } catch (e) { authDiag.agentAuthProfiles = e.message; }
     try { authDiag.mainAuth = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "auth.json"), "utf8")); } catch (e) { authDiag.mainAuth = e.message; }
     // Check what the gateway expects
-    const { execSync } = childProcess;
-    authDiag.listProfilesGrep = execSync(`grep -n "listProfilesForProvider\\|loadAuthStore\\|readAuthProfiles\\|parseAuthProfiles" /openclaw/dist/auth-profiles-sPzk-5vQ.js 2>/dev/null | head -10`, { encoding: "utf8", timeout: 5000 }).trim();
+    try {
+      authDiag.listProfilesGrep = childProcess.execSync(`grep -n "listProfilesForProvider\\|loadAuthStore\\|readAuthProfiles\\|parseAuthProfiles" /openclaw/dist/auth-profiles-sPzk-5vQ.js 2>/dev/null | head -10`, { encoding: "utf8", timeout: 5000 }).trim();
+    } catch {}
     agentModelGrep = authDiag;
   } catch {}
 
