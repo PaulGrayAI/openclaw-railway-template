@@ -711,16 +711,21 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
     if (interactive) {
       // --- Two-step OAuth flow ---
       // Step 1: Create base config with --auth-choice skip
+      // Delete any stale config/state that might confuse the CLI
+      try { fs.rmSync(configPath(), { force: true }); } catch {}
+
       writeLine({ type: "status", step: "onboard", message: "Creating base configuration..." });
       const skipArgs = buildOnboardArgs({ ...payload, authChoice: "skip" }, { interactive: false });
+      let step1out = "";
       const step1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs(skipArgs), {
         timeoutMs: 30_000,
         signal: ac.signal,
-        onData(chunk) { writeLine({ type: "log", text: chunk }); },
+        onData(chunk) { step1out += chunk; writeLine({ type: "log", text: chunk }); },
       });
 
       if (step1.code !== 0 || !isConfigured()) {
-        writeLine({ type: "error", message: `Base config creation failed (exit code ${step1.code})` });
+        const detail = step1out.trim() ? ` — ${step1out.trim().slice(-300)}` : " — no output from CLI";
+        writeLine({ type: "error", message: `Base config creation failed (exit code ${step1.code})${detail}` });
         onboardInProgress = false;
         return res.end();
       }
