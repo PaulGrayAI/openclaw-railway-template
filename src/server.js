@@ -353,6 +353,50 @@ app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
   res.type("text/plain").send(help.output);
 });
 
+// Diagnostic: test onboard with various flag combinations
+app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
+  const authChoice = req.query.auth || "openai-codex";
+  const results = {};
+
+  // Test 1: non-interactive + json (original flags)
+  const t1 = await runCmd(OPENCLAW_NODE, clawArgs([
+    "onboard", "--non-interactive", "--json", "--accept-risk",
+    "--no-install-daemon", "--skip-health",
+    "--workspace", WORKSPACE_DIR,
+    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
+    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
+    "--flow", "quickstart", "--auth-choice", authChoice,
+  ]));
+  results["non-interactive+json"] = { code: t1.code, output: t1.output };
+
+  // Test 2: interactive + json (no --non-interactive)
+  const t2 = await runCmd(OPENCLAW_NODE, clawArgs([
+    "onboard", "--json", "--accept-risk",
+    "--no-install-daemon", "--skip-health",
+    "--workspace", WORKSPACE_DIR,
+    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
+    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
+    "--flow", "quickstart", "--auth-choice", authChoice,
+  ]));
+  results["interactive+json"] = { code: t2.code, output: t2.output };
+
+  // Test 3: non-interactive + json with auth-choice=skip
+  const t3 = await runCmd(OPENCLAW_NODE, clawArgs([
+    "onboard", "--non-interactive", "--json", "--accept-risk",
+    "--no-install-daemon", "--skip-health",
+    "--workspace", WORKSPACE_DIR,
+    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
+    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
+    "--flow", "quickstart", "--auth-choice", "skip",
+  ]));
+  results["non-interactive+json+skip"] = { code: t3.code, output: t3.output };
+
+  // Clean up any config created by test 3
+  try { fs.rmSync(configPath(), { force: true }); } catch {}
+
+  res.json(results);
+});
+
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   const version = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
   const channelsHelp = await runCmd(
