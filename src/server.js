@@ -365,71 +365,46 @@ app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
   res.type("text/plain").send(parts.join("\n\n"));
 });
 
-// Diagnostic: test onboard with various flag combinations (all non-interactive to avoid hanging)
+// Diagnostic: two-step approach — onboard with skip, then models auth login
 app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
-  const authChoice = req.query.auth || "openai-codex";
+  const provider = req.query.provider || "openai-codex";
   const results = {};
 
-  // Test 1: non-interactive + json with openai-codex
-  const t1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "onboard", "--non-interactive", "--json", "--accept-risk",
-    "--no-install-daemon", "--skip-health",
-    "--workspace", WORKSPACE_DIR,
-    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
-    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
-    "--flow", "quickstart", "--auth-choice", authChoice,
-  ]), { timeoutMs: 15_000, onData() {} });
-  results["ni+json+codex"] = { code: t1.code, timeout: t1.killedByTimeout };
-
-  // Check what config was created
-  try {
-    const cfg = fs.readFileSync(configPath(), "utf8");
-    results["ni+json+codex"].configCreated = true;
-    results["ni+json+codex"].configSnippet = cfg.slice(0, 500);
-  } catch { results["ni+json+codex"].configCreated = false; }
+  // Clean slate
   try { fs.rmSync(configPath(), { force: true }); } catch {}
 
-  // Test 2: non-interactive + json with skip
-  const t2 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+  // Step 1: onboard with skip to create base config
+  let step1out = "";
+  const step1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
     "onboard", "--non-interactive", "--json", "--accept-risk",
     "--no-install-daemon", "--skip-health",
     "--workspace", WORKSPACE_DIR,
     "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
     "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
     "--flow", "quickstart", "--auth-choice", "skip",
-  ]), { timeoutMs: 15_000, onData() {} });
-  results["ni+json+skip"] = { code: t2.code, timeout: t2.killedByTimeout };
+  ]), { timeoutMs: 15_000, onData(d) { step1out += d; } });
+  results["step1-onboard-skip"] = { code: step1.code, output: step1out.slice(0, 500), configCreated: isConfigured() };
 
-  try {
-    const cfg = fs.readFileSync(configPath(), "utf8");
-    results["ni+json+skip"].configCreated = true;
-    results["ni+json+skip"].fullConfig = cfg;
-  } catch { results["ni+json+skip"].configCreated = false; }
-  try { fs.rmSync(configPath(), { force: true }); } catch {}
+  if (!isConfigured()) {
+    try { fs.rmSync(configPath(), { force: true }); } catch {}
+    return res.json(results);
+  }
 
-  // Test 3: models help + config set help
-  const modelsHelp = await runCmd(OPENCLAW_NODE, clawArgs(["models", "--help"]));
-  results["models-help"] = modelsHelp.output;
-  const configSetHelp = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--help"]));
-  results["config-set-help"] = configSetHelp.output;
+  // Step 2: try models auth login (with PTY, 10s timeout to capture initial output)
+  let step2out = "";
+  const step2 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+    "models", "auth", "login", "--provider", provider, "--set-default",
+  ]), { timeoutMs: 10_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step2out += d; } });
+  results["step2-auth-login-pty"] = { code: step2.code, timeout: step2.killedByTimeout, output: step2out.slice(0, 2000) };
 
-  // Test 4: non-interactive + json + PTY with openai-codex
-  let t3out = "";
-  const t3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "onboard", "--non-interactive", "--json", "--accept-risk",
-    "--no-install-daemon", "--skip-health",
-    "--workspace", WORKSPACE_DIR,
-    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
-    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
-    "--flow", "quickstart", "--auth-choice", authChoice,
-  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color" }, onData(d) { t3out += d; } });
-  results["ni+json+pty+codex"] = { code: t3.code, timeout: t3.killedByTimeout, output: t3out.slice(0, 1000) };
+  // Step 3: try without PTY too
+  let step3out = "";
+  const step3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+    "models", "auth", "login", "--provider", provider, "--set-default",
+  ]), { timeoutMs: 10_000, onData(d) { step3out += d; } });
+  results["step3-auth-login-noPty"] = { code: step3.code, timeout: step3.killedByTimeout, output: step3out.slice(0, 2000) };
 
-  try {
-    const cfg = fs.readFileSync(configPath(), "utf8");
-    results["ni+json+pty+codex"].configCreated = true;
-    results["ni+json+pty+codex"].configSnippet = cfg.slice(0, 500);
-  } catch { results["ni+json+pty+codex"].configCreated = false; }
+  // Clean up
   try { fs.rmSync(configPath(), { force: true }); } catch {}
 
   res.json(results);
