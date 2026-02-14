@@ -29,40 +29,26 @@ function debug(...args) {
 // Gateway admin token (protects Openclaw gateway + Control UI).
 // Must be stable across restarts. If not provided via env, persist it in the state dir.
 function resolveGatewayToken() {
-  console.log(`[token] ========== SERVER STARTUP TOKEN RESOLUTION ==========`);
   const envTok = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
-  console.log(`[token] ENV OPENCLAW_GATEWAY_TOKEN exists: ${!!process.env.OPENCLAW_GATEWAY_TOKEN}`);
-  console.log(`[token] ENV value length: ${process.env.OPENCLAW_GATEWAY_TOKEN?.length || 0}`);
-  console.log(`[token] After trim length: ${envTok?.length || 0}`);
-
   if (envTok) {
-    console.log(`[token] ✓ Using token from OPENCLAW_GATEWAY_TOKEN env variable`);
-    console.log(`[token]   First 16 chars: ${envTok.slice(0, 16)}...`);
-    console.log(`[token]   Full token: ${envTok}`);
+    console.log(`[token] Using token from OPENCLAW_GATEWAY_TOKEN env variable`);
     return envTok;
   }
 
-  console.log(`[token] Env variable not available, checking persisted file...`);
   const tokenPath = path.join(STATE_DIR, "gateway.token");
-  console.log(`[token] Token file path: ${tokenPath}`);
-
   try {
     const existing = fs.readFileSync(tokenPath, "utf8").trim();
     if (existing) {
-      console.log(`[token] ✓ Using token from persisted file`);
-      console.log(`[token]   First 16 chars: ${existing.slice(0, 8)}...`);
+      console.log(`[token] Using token from persisted file`);
       return existing;
     }
-  } catch (err) {
-    console.log(`[token] Could not read persisted file: ${err.message}`);
-  }
+  } catch {}
 
   const generated = crypto.randomBytes(32).toString("hex");
-  console.log(`[token] ⚠️  Generating new random token (${generated.slice(0, 8)}...)`);
+  console.log(`[token] Generated new random token`);
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(tokenPath, generated, { encoding: "utf8", mode: 0o600 });
-    console.log(`[token] Persisted new token to ${tokenPath}`);
   } catch (err) {
     console.warn(`[token] Could not persist token: ${err}`);
   }
@@ -450,134 +436,6 @@ app.get("/setup/styles.css", requireSetupAuth, (_req, res) => {
 
 app.get("/setup", requireSetupAuth, (_req, res) => {
   res.sendFile(path.join(process.cwd(), "src", "public", "setup.html"));
-});
-
-app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
-  const help = await runCmd(OPENCLAW_NODE, clawArgs(["onboard", "--help"]));
-  res.type("text/plain").send(help.output);
-});
-
-// Run CLI commands (for diagnostics)
-app.get("/setup/api/cli-run", requireSetupAuth, async (req, res) => {
-  const cmd = req.query.cmd;
-  if (!cmd) return res.status(400).type("text/plain").send("?cmd= required");
-  const args = cmd.split(" ");
-  const result = await runCmd(OPENCLAW_NODE, clawArgs(args));
-  res.type("text/plain").send(`exit=${result.code}\n\n${result.output}`);
-});
-
-// List available extensions from the built openclaw source
-app.get("/setup/api/extensions", requireSetupAuth, (_req, res) => {
-  const results = {};
-  const extDir = "/openclaw/extensions";
-  try {
-    const entries = fs.readdirSync(extDir, { withFileTypes: true });
-    results.extensions = entries.filter(e => e.isDirectory()).map(e => {
-      const pkgPath = path.join(extDir, e.name, "package.json");
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-        return { name: e.name, pkgName: pkg.name, description: pkg.description };
-      } catch {
-        return { name: e.name };
-      }
-    });
-  } catch (err) {
-    results.error = String(err);
-  }
-  // Also check /openclaw/dist/extensions
-  try {
-    const entries = fs.readdirSync("/openclaw/dist/extensions", { withFileTypes: true });
-    results.distExtensions = entries.filter(e => e.isDirectory()).map(e => e.name);
-  } catch {}
-  // Check plugins dir
-  try {
-    const pluginsDir = path.join(STATE_DIR, "plugins");
-    const entries = fs.readdirSync(pluginsDir, { withFileTypes: true });
-    results.installedPlugins = entries.map(e => e.name);
-  } catch {}
-  res.json(results);
-});
-
-app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
-  const cmds = (req.query.cmd || "").split(",").filter(Boolean);
-  if (cmds.length === 0) cmds.push("");
-  const parts = [];
-  for (const c of cmds) {
-    const args = c ? c.split(" ").concat("--help") : ["--help"];
-    const help = await runCmd(OPENCLAW_NODE, clawArgs(args));
-    parts.push(`=== ${c || "(top-level)"} (exit=${help.code}) ===\n${help.output}`);
-  }
-  res.type("text/plain").send(parts.join("\n\n"));
-});
-
-// Diagnostic: two-step approach — onboard with skip, then models auth login
-app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
-  const provider = req.query.provider || "openai-codex";
-  const results = {};
-
-  // Clean slate
-  try { fs.rmSync(configPath(), { force: true }); } catch {}
-
-  // Step 1: onboard with skip to create base config
-  let step1out = "";
-  const step1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "onboard", "--non-interactive", "--json", "--accept-risk",
-    "--no-install-daemon", "--skip-health",
-    "--workspace", WORKSPACE_DIR,
-    "--gateway-bind", "loopback", "--gateway-port", String(INTERNAL_GATEWAY_PORT),
-    "--gateway-auth", "token", "--gateway-token", OPENCLAW_GATEWAY_TOKEN,
-    "--flow", "quickstart", "--auth-choice", "skip",
-  ]), { timeoutMs: 15_000, onData(d) { step1out += d; } });
-  results["step1-onboard-skip"] = { code: step1.code, output: step1out.slice(0, 500), configCreated: isConfigured() };
-
-  if (!isConfigured()) {
-    try { fs.rmSync(configPath(), { force: true }); } catch {}
-    return res.json(results);
-  }
-
-  // Step 2: Test direct OpenAI device code request (just get the code, don't wait for auth)
-  try {
-    const dcResp = await fetch(`${OPENAI_AUTH_BASE}/api/accounts/deviceauth/usercode`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: OPENAI_CLIENT_ID }),
-    });
-    const dcBody = await dcResp.text();
-    results["direct-device-code"] = {
-      status: dcResp.status,
-      ok: dcResp.ok,
-      body: dcBody.slice(0, 1000),
-    };
-  } catch (err) {
-    results["direct-device-code"] = { error: String(err) };
-  }
-
-  // Clean up
-  try { fs.rmSync(configPath(), { force: true }); } catch {}
-
-  // Step 5: Search openclaw dist for OAuth-related strings
-  try {
-    const { execSync } = childProcess;
-    const grepResults = {};
-    for (const pattern of ["device_authorization", "device/code", "client_id", "openai-codex", "chatgpt.com/auth", "auth0.openai.com", "login.chatgpt.com"]) {
-      try {
-        const out = execSync(`grep -r -l "${pattern}" /openclaw/dist/ 2>/dev/null | head -5`, { encoding: "utf8", timeout: 5000 });
-        if (out.trim()) {
-          grepResults[pattern] = out.trim().split("\n");
-          // Get context around the match
-          try {
-            const ctx = execSync(`grep -r -n "${pattern}" /openclaw/dist/ 2>/dev/null | head -5`, { encoding: "utf8", timeout: 5000 });
-            grepResults[pattern + "_context"] = ctx.trim().slice(0, 500);
-          } catch {}
-        }
-      } catch {}
-    }
-    results["oauth-source-grep"] = grepResults;
-  } catch (e) {
-    results["oauth-source-grep"] = { error: String(e) };
-  }
-
-  res.json(results);
 });
 
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
