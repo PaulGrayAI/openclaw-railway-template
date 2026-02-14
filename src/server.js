@@ -480,7 +480,7 @@ function buildOnboardArgs(payload, opts = {}) {
     "onboard",
     ...(opts.interactive ? [] : ["--non-interactive"]),
     "--accept-risk",
-    "--json",
+    ...(opts.interactive ? [] : ["--json"]),
     "--no-install-daemon",
     "--skip-health",
     "--workspace",
@@ -668,7 +668,7 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
       timeoutMs,
       signal: ac.signal,
       usePty: interactive,
-      extraEnv: interactive ? { TERM: "dumb", FORCE_COLOR: "0", NO_COLOR: "1" } : {},
+      extraEnv: interactive ? { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" } : {},
       onData(chunk) {
         capturedOutput += chunk;
         writeLine({ type: "log", text: chunk });
