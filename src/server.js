@@ -353,6 +353,15 @@ app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
   res.type("text/plain").send(help.output);
 });
 
+// Run CLI commands (for diagnostics)
+app.get("/setup/api/cli-run", requireSetupAuth, async (req, res) => {
+  const cmd = req.query.cmd;
+  if (!cmd) return res.status(400).type("text/plain").send("?cmd= required");
+  const args = cmd.split(" ");
+  const result = await runCmd(OPENCLAW_NODE, clawArgs(args));
+  res.type("text/plain").send(`exit=${result.code}\n\n${result.output}`);
+});
+
 app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
   const cmds = (req.query.cmd || "").split(",").filter(Boolean);
   if (cmds.length === 0) cmds.push("");
