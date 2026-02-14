@@ -327,11 +327,11 @@ async function startGateway() {
   // Ensure Control UI auth settings are present for behind-proxy operation
   await runCmd(
     OPENCLAW_NODE,
-    clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
+    clawArgs(["config", "set", "--json", "gateway.controlUi.allowInsecureAuth", "true"]),
   );
   await runCmd(
     OPENCLAW_NODE,
-    clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
+    clawArgs(["config", "set", "--json", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
   );
   await runCmd(
     OPENCLAW_NODE,
@@ -1010,8 +1010,8 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
 
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.controlUi.allowInsecureAuth", "true"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]));
     // Grant full operator scopes to insecure auth (needed for Control UI chat to work)
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.controlUi.insecureScopes", '["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"]']));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1","::1"]']));
@@ -1208,12 +1208,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       // Allow Control UI access without device pairing (fixes error 1008: pairing required)
       await runCmd(
         OPENCLAW_NODE,
-        clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
+        clawArgs(["config", "set", "--json", "gateway.controlUi.allowInsecureAuth", "true"]),
       );
       // Disable device auth for behind-proxy scenarios (GitHub issue #1690)
       await runCmd(
         OPENCLAW_NODE,
-        clawArgs(["config", "set", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
+        clawArgs(["config", "set", "--json", "gateway.controlUi.dangerouslyDisableDeviceAuth", "true"]),
       );
       // Grant full operator scopes to insecure auth (fixes "missing scope: operator.write")
       await runCmd(
@@ -1388,6 +1388,10 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
     OPENCLAW_NODE,
     clawArgs(["channels", "add", "--help"]),
   );
+  // Read config for debugging
+  let config = null;
+  try { config = JSON.parse(fs.readFileSync(configPath(), "utf8")); } catch {}
+
   res.json({
     wrapper: {
       node: process.version,
@@ -1407,6 +1411,7 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       version: v.output.trim(),
       channelsAddHelpIncludesTelegram: help.output.includes("telegram"),
     },
+    gatewayConfig: config?.gateway || null,
   });
 });
 
