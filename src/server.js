@@ -340,22 +340,49 @@ async function startGateway() {
 
   console.log(`[gateway] token sync complete`);
 
-  // Ensure agent auth directory has credentials (copied from main state dir).
-  // The onboard --auth-choice skip flow doesn't populate agents/main/agent/,
-  // causing "No API key found" errors when the gateway agent tries to use an LLM.
+  // Ensure agent auth directory has credentials merged from main state dir.
+  // The onboard --auth-choice skip flow creates agents/main/agent/auth-profiles.json
+  // but without the openai-codex profile. We merge it in from the main auth store.
   const agentAuthDir = path.join(STATE_DIR, "agents", "main", "agent");
   fs.mkdirSync(agentAuthDir, { recursive: true });
-  for (const f of ["auth-profiles.json", "auth.json"]) {
-    const src = path.join(STATE_DIR, f);
-    const dst = path.join(agentAuthDir, f);
-    try {
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dst);
-        console.log(`[gateway] Synced ${f} to agent auth dir`);
+  try {
+    const srcPath = path.join(STATE_DIR, "auth-profiles.json");
+    const dstPath = path.join(agentAuthDir, "auth-profiles.json");
+    if (fs.existsSync(srcPath)) {
+      const src = JSON.parse(fs.readFileSync(srcPath, "utf8"));
+      // Load existing agent auth store (v1 format)
+      let dst = { version: 1, profiles: {} };
+      try {
+        const existing = JSON.parse(fs.readFileSync(dstPath, "utf8"));
+        if (existing.version === 1 && existing.profiles) dst = existing;
+      } catch {}
+      // Merge profiles from source into destination
+      const srcProfiles = src.version === 1 ? (src.profiles || {}) : {};
+      let merged = false;
+      for (const [key, profile] of Object.entries(srcProfiles)) {
+        if (profile && profile.provider) {
+          dst.profiles[key] = profile;
+          merged = true;
+        }
       }
-    } catch (err) {
-      console.warn(`[gateway] Could not copy ${f} to agent dir: ${err.message}`);
+      if (merged) {
+        fs.writeFileSync(dstPath, JSON.stringify(dst, null, 2));
+        console.log(`[gateway] Merged auth profiles to agent auth dir`);
+      }
     }
+  } catch (err) {
+    console.warn(`[gateway] Could not merge auth profiles: ${err.message}`);
+  }
+  // Also sync auth.json
+  try {
+    const src = path.join(STATE_DIR, "auth.json");
+    const dst = path.join(agentAuthDir, "auth.json");
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dst);
+      console.log(`[gateway] Synced auth.json to agent auth dir`);
+    }
+  } catch (err) {
+    console.warn(`[gateway] Could not copy auth.json to agent dir: ${err.message}`);
   }
 
   const args = [
@@ -919,20 +946,25 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
           fs.writeFileSync(authFilePath, JSON.stringify(authData, null, 2));
           writeLine({ type: "log", text: `Credentials saved to ${authFilePath}\n` });
 
-          // Also write to auth-profiles.json (alternate location OpenClaw may check)
+          // Write to auth-profiles.json in the v1 format the gateway expects:
+          // { version: 1, profiles: { "openai-codex:default": { type, provider, access, refresh, expires } } }
           const authProfilesPath = path.join(STATE_DIR, "auth-profiles.json");
-          let profiles = {};
-          try { profiles = JSON.parse(fs.readFileSync(authProfilesPath, "utf8")); } catch {}
-          const profileKey = `openai-codex:default`;
-          profiles[profileKey] = {
-            provider: "openai-codex",
+          let profileStore = { version: 1, profiles: {} };
+          try {
+            const existing = JSON.parse(fs.readFileSync(authProfilesPath, "utf8"));
+            if (existing.version === 1 && existing.profiles) {
+              profileStore = existing;
+            }
+          } catch {}
+          profileStore.profiles["openai-codex:default"] = {
             type: "oauth",
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            expiresAt: tokens.expiresAt,
+            provider: "openai-codex",
+            access: tokens.accessToken,
+            refresh: tokens.refreshToken,
+            expires: tokens.expiresAt,
           };
-          fs.writeFileSync(authProfilesPath, JSON.stringify(profiles, null, 2));
-          writeLine({ type: "log", text: `Credentials also saved to ${authProfilesPath}\n` });
+          fs.writeFileSync(authProfilesPath, JSON.stringify(profileStore, null, 2));
+          writeLine({ type: "log", text: `Credentials saved to ${authProfilesPath}\n` });
 
           // Set default model provider and agent model via config.
           // The --auth-choice skip onboard uses anthropic/claude-opus-4-6 as the default model,
@@ -941,17 +973,27 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
           await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.model.primary", "openai-codex/gpt-5.3-codex"]));
           writeLine({ type: "log", text: "Default provider set to openai-codex, model set to openai-codex/gpt-5.3-codex\n" });
 
-          // Copy auth profiles to the agent-specific directory so the gateway agent can find them.
-          // The onboard --auth-choice skip doesn't create the agent auth store, so the gateway
-          // looks for credentials in agents/main/agent/ and fails with "No API key found".
+          // Merge auth profile into the agent-specific directory (v1 format).
           const agentAuthDir = path.join(STATE_DIR, "agents", "main", "agent");
           fs.mkdirSync(agentAuthDir, { recursive: true });
           const agentAuthProfilesPath = path.join(agentAuthDir, "auth-profiles.json");
           try {
-            fs.copyFileSync(authProfilesPath, agentAuthProfilesPath);
-            writeLine({ type: "log", text: `Credentials copied to ${agentAuthProfilesPath}\n` });
+            let agentStore = { version: 1, profiles: {} };
+            try {
+              const existing = JSON.parse(fs.readFileSync(agentAuthProfilesPath, "utf8"));
+              if (existing.version === 1 && existing.profiles) agentStore = existing;
+            } catch {}
+            agentStore.profiles["openai-codex:default"] = {
+              type: "oauth",
+              provider: "openai-codex",
+              access: tokens.accessToken,
+              refresh: tokens.refreshToken,
+              expires: tokens.expiresAt,
+            };
+            fs.writeFileSync(agentAuthProfilesPath, JSON.stringify(agentStore, null, 2));
+            writeLine({ type: "log", text: `Credentials merged into ${agentAuthProfilesPath}\n` });
           } catch (copyErr) {
-            writeLine({ type: "log", text: `[WARNING] Could not copy auth to agent dir: ${copyErr.message}\n` });
+            writeLine({ type: "log", text: `[WARNING] Could not write agent auth: ${copyErr.message}\n` });
           }
           // Also copy auth.json
           const agentAuthPath = path.join(agentAuthDir, "auth.json");
