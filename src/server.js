@@ -354,10 +354,15 @@ app.get("/setup/api/onboard-help", requireSetupAuth, async (_req, res) => {
 });
 
 app.get("/setup/api/cli-help", requireSetupAuth, async (req, res) => {
-  const sub = req.query.cmd;
-  const args = sub ? [sub, "--help"] : ["--help"];
-  const help = await runCmd(OPENCLAW_NODE, clawArgs(args));
-  res.type("text/plain").send(`exit=${help.code}\n\n${help.output}`);
+  const cmds = (req.query.cmd || "").split(",").filter(Boolean);
+  if (cmds.length === 0) cmds.push("");
+  const parts = [];
+  for (const c of cmds) {
+    const args = c ? c.split(" ").concat("--help") : ["--help"];
+    const help = await runCmd(OPENCLAW_NODE, clawArgs(args));
+    parts.push(`=== ${c || "(top-level)"} (exit=${help.code}) ===\n${help.output}`);
+  }
+  res.type("text/plain").send(parts.join("\n\n"));
 });
 
 // Diagnostic: test onboard with various flag combinations (all non-interactive to avoid hanging)
