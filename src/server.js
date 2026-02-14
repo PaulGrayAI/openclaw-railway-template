@@ -1435,7 +1435,10 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
   let agentModelGrep = null;
   try {
     const { execSync } = childProcess;
-    agentModelGrep = execSync(`sed -n '17100,17120p' /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null`, { encoding: "utf8", timeout: 5000 }).trim();
+    const lines = [
+      execSync(`grep -n "resolveConfiguredModelRef\\|DEFAULT_PROVIDER\\|DEFAULT_MODEL\\|agents.*defaults.*model\\|configuredModel" /openclaw/dist/gateway-cli-DO7TBq1j.js 2>/dev/null | head -20`, { encoding: "utf8", timeout: 5000 }).trim(),
+    ].join("\n");
+    agentModelGrep = lines;
   } catch {}
 
   res.json({
