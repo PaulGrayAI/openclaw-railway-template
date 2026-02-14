@@ -713,18 +713,22 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
       // Step 1: Create base config with --auth-choice skip
       // Delete any stale config/state that might confuse the CLI
       try { fs.rmSync(configPath(), { force: true }); } catch {}
+      // Also delete auth-profiles.json which may have stale state
+      try { fs.rmSync(path.join(STATE_DIR, "auth-profiles.json"), { force: true }); } catch {}
 
       writeLine({ type: "status", step: "onboard", message: "Creating base configuration..." });
-      const skipArgs = buildOnboardArgs({ ...payload, authChoice: "skip" }, { interactive: false });
-      let step1out = "";
-      const step1 = await runCmdStreaming(OPENCLAW_NODE, clawArgs(skipArgs), {
-        timeoutMs: 30_000,
-        signal: ac.signal,
-        onData(chunk) { step1out += chunk; writeLine({ type: "log", text: chunk }); },
-      });
+      const skipPayload = { flow: payload.flow || "quickstart", authChoice: "skip" };
+      const skipArgs = buildOnboardArgs(skipPayload, { interactive: false });
+      const skipFullArgs = clawArgs(skipArgs);
+      const skipSafe = skipFullArgs.map((a) => a === OPENCLAW_GATEWAY_TOKEN ? a.slice(0, 8) + "..." : a);
+      writeLine({ type: "log", text: `[step1] ${skipSafe.join(" ")}\n` });
+
+      // Use runCmd (non-streaming) for reliability — this is a fast non-interactive command
+      const step1 = await runCmd(OPENCLAW_NODE, skipFullArgs);
+      if (step1.output) writeLine({ type: "log", text: step1.output });
 
       if (step1.code !== 0 || !isConfigured()) {
-        const detail = step1out.trim() ? ` — ${step1out.trim().slice(-300)}` : " — no output from CLI";
+        const detail = step1.output?.trim() ? ` — ${step1.output.trim().slice(-300)}` : " — no output from CLI";
         writeLine({ type: "error", message: `Base config creation failed (exit code ${step1.code})${detail}` });
         onboardInProgress = false;
         return res.end();
