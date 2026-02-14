@@ -403,11 +403,17 @@ app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
   try {
     const cfg = fs.readFileSync(configPath(), "utf8");
     results["ni+json+skip"].configCreated = true;
-    results["ni+json+skip"].configSnippet = cfg.slice(0, 500);
+    results["ni+json+skip"].fullConfig = cfg;
   } catch { results["ni+json+skip"].configCreated = false; }
   try { fs.rmSync(configPath(), { force: true }); } catch {}
 
-  // Test 3: non-interactive + json + PTY with openai-codex
+  // Test 3: models help + config set help
+  const modelsHelp = await runCmd(OPENCLAW_NODE, clawArgs(["models", "--help"]));
+  results["models-help"] = modelsHelp.output;
+  const configSetHelp = await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "--help"]));
+  results["config-set-help"] = configSetHelp.output;
+
+  // Test 4: non-interactive + json + PTY with openai-codex
   let t3out = "";
   const t3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
     "onboard", "--non-interactive", "--json", "--accept-risk",
