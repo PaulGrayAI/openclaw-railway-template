@@ -238,6 +238,38 @@ async function waitForGatewayReady(opts = {}) {
   return false;
 }
 
+// Patch the compiled gateway code to preserve operator scopes when device auth
+// is bypassed (allowInsecureAuth or dangerouslyDisableDeviceAuth). Without this,
+// the gateway clears all scopes to [] when no device identity is present, causing
+// "missing scope: operator.read/write" errors in the Control UI.
+function patchGatewayScopes() {
+  const gatewayFiles = [
+    "/openclaw/dist/gateway-cli-DO7TBq1j.js",
+    "/openclaw/dist/gateway-cli-ChsmQYiD.js",
+  ];
+  // The original code unconditionally clears scopes when !device:
+  //   if (!device) { if (scopes.length > 0) { scopes = []; connectParams.scopes = scopes; }
+  // We change it to only clear scopes when the bypass is NOT active:
+  //   if (!device) { if (scopes.length > 0 && !(allowControlUiBypass && sharedAuthOk)) { scopes = []; ...
+  const needle = "if (!device) {\n\t\t\t\t\tif (scopes.length > 0) {\n\t\t\t\t\t\tscopes = [];";
+  const replacement = "if (!device) {\n\t\t\t\t\tif (scopes.length > 0 && !(allowControlUiBypass && sharedAuthOk)) {\n\t\t\t\t\t\tscopes = [];";
+  for (const filePath of gatewayFiles) {
+    try {
+      const content = fs.readFileSync(filePath, "utf8");
+      if (content.includes(needle)) {
+        fs.writeFileSync(filePath, content.replace(needle, replacement));
+        console.log(`[patch] Patched scope clearing in ${path.basename(filePath)}`);
+      } else if (content.includes(replacement)) {
+        console.log(`[patch] Already patched: ${path.basename(filePath)}`);
+      } else {
+        console.warn(`[patch] Could not find scope-clearing pattern in ${path.basename(filePath)}`);
+      }
+    } catch (err) {
+      console.warn(`[patch] Could not patch ${filePath}: ${err.message}`);
+    }
+  }
+}
+
 async function startGateway() {
   if (gatewayProc) return;
   if (!isConfigured()) throw new Error("Gateway cannot start: not configured");
@@ -321,6 +353,12 @@ async function startGateway() {
     OPENCLAW_GATEWAY_TOKEN,
   ];
 
+  // Patch gateway dist to not strip scopes when device auth is bypassed.
+  // Without this patch, the gateway clears all scopes to [] when no device identity
+  // is present (line ~17815), making the Control UI unable to read/write chat.
+  // The patch changes the condition to preserve scopes when allowControlUiBypass && sharedAuthOk.
+  patchGatewayScopes();
+
   gatewayProc = childProcess.spawn(OPENCLAW_NODE, clawArgs(args), {
     stdio: "inherit",
     env: {
@@ -331,8 +369,6 @@ async function startGateway() {
   });
 
   console.log(`[gateway] starting with command: ${OPENCLAW_NODE} ${clawArgs(args).join(" ")}`);
-  console.log(`[gateway] STATE_DIR: ${STATE_DIR}`);
-  console.log(`[gateway] WORKSPACE_DIR: ${WORKSPACE_DIR}`);
   console.log(`[gateway] config path: ${configPath()}`);
 
   gatewayProc.on("error", (err) => {
