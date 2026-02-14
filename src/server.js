@@ -550,7 +550,7 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
-function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
+function runCmdStreaming(cmd, args, { onData, timeoutMs, signal, extraEnv } = {}) {
   return new Promise((resolve) => {
     let killedByTimeout = false;
     const proc = childProcess.spawn(cmd, args, {
@@ -558,6 +558,7 @@ function runCmdStreaming(cmd, args, { onData, timeoutMs, signal } = {}) {
         ...process.env,
         OPENCLAW_STATE_DIR: STATE_DIR,
         OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+        ...extraEnv,
       },
     });
 
@@ -632,15 +633,31 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
     const onboardArgs = buildOnboardArgs(payload, { interactive });
     const timeoutMs = interactive ? 180_000 : 60_000;
 
-    writeLine({ type: "status", step: "onboard", message: "Running onboard..." });
+    const fullArgs = clawArgs(onboardArgs);
+    const safeArgs = fullArgs.map((a) =>
+      a === OPENCLAW_GATEWAY_TOKEN ? a.slice(0, 8) + "..." : a,
+    );
+    console.log(`[onboard-stream] command: ${OPENCLAW_NODE} ${safeArgs.join(" ")}`);
+    console.log(`[onboard-stream] interactive=${interactive} timeoutMs=${timeoutMs}`);
 
-    const onboard = await runCmdStreaming(OPENCLAW_NODE, clawArgs(onboardArgs), {
+    writeLine({ type: "status", step: "onboard", message: "Running onboard..." });
+    writeLine({ type: "log", text: `[debug] interactive=${interactive} args: ${safeArgs.join(" ")}\n` });
+
+    let capturedOutput = "";
+    const onboard = await runCmdStreaming(OPENCLAW_NODE, fullArgs, {
       timeoutMs,
       signal: ac.signal,
+      extraEnv: interactive ? { TERM: "dumb", FORCE_COLOR: "0", NO_COLOR: "1" } : {},
       onData(chunk) {
+        capturedOutput += chunk;
         writeLine({ type: "log", text: chunk });
       },
     });
+
+    console.log(`[onboard-stream] exit code=${onboard.code} killedByTimeout=${onboard.killedByTimeout} outputLen=${capturedOutput.length}`);
+    if (capturedOutput.length > 0) {
+      console.log(`[onboard-stream] output: ${capturedOutput.slice(0, 2000)}`);
+    }
 
     if (onboard.killedByTimeout) {
       writeLine({ type: "error", message: "OAuth timed out after 3 minutes. Please try again and complete the browser login faster." });
@@ -650,7 +667,8 @@ app.post("/setup/api/run-stream", requireSetupAuth, async (req, res) => {
 
     const ok = onboard.code === 0 && isConfigured();
     if (!ok) {
-      writeLine({ type: "error", message: `Onboard failed (exit code ${onboard.code})` });
+      const detail = capturedOutput.trim() ? ` — ${capturedOutput.trim().slice(-200)}` : " — no output from CLI";
+      writeLine({ type: "error", message: `Onboard failed (exit code ${onboard.code})${detail}` });
       onboardInProgress = false;
       return res.end();
     }
