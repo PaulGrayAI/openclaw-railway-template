@@ -1435,7 +1435,7 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
   let agentModelGrep = null;
   try {
     const { execSync } = childProcess;
-    agentModelGrep = execSync(`grep -n "DEFAULT_MODEL\\|DEFAULT_PROVIDER" /openclaw/dist/auth-profiles-sPzk-5vQ.js 2>/dev/null | head -10`, { encoding: "utf8", timeout: 5000 }).trim();
+    agentModelGrep = execSync(`grep -n "openai-codex\\|CODEX_DEFAULT\\|codex.*model\\|openai.*default.*model" /openclaw/dist/auth-profiles-sPzk-5vQ.js 2>/dev/null | head -15`, { encoding: "utf8", timeout: 5000 }).trim();
   } catch {}
 
   res.json({
