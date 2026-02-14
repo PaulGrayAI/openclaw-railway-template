@@ -431,19 +431,27 @@ app.get("/setup/api/test-onboard", requireSetupAuth, async (req, res) => {
     return res.json(results);
   }
 
-  // Step 2: try models auth login (with PTY, 10s timeout to capture initial output)
+  // Step 2: try setup-token with PTY
   let step2out = "";
   const step2 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "models", "auth", "login", "--provider", provider, "--set-default",
-  ]), { timeoutMs: 10_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step2out += d; } });
-  results["step2-auth-login-pty"] = { code: step2.code, timeout: step2.killedByTimeout, output: step2out.slice(0, 2000) };
+    "models", "auth", "setup-token", "--provider", provider,
+  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step2out += d; } });
+  results["setup-token-pty"] = { code: step2.code, timeout: step2.killedByTimeout, output: step2out.slice(0, 2000) };
 
-  // Step 3: try without PTY too
+  // Step 3: minimal onboard with just --auth-choice (no other flags) + PTY
+  try { fs.rmSync(configPath(), { force: true }); } catch {}
   let step3out = "";
   const step3 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
-    "models", "auth", "login", "--provider", provider, "--set-default",
-  ]), { timeoutMs: 10_000, onData(d) { step3out += d; } });
-  results["step3-auth-login-noPty"] = { code: step3.code, timeout: step3.killedByTimeout, output: step3out.slice(0, 2000) };
+    "onboard", "--auth-choice", provider,
+  ]), { timeoutMs: 15_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step3out += d; } });
+  results["minimal-onboard-pty"] = { code: step3.code, timeout: step3.killedByTimeout, output: step3out.slice(0, 2000) };
+
+  // Step 4: try login-github-copilot style — check if there's a built-in for openai
+  let step4out = "";
+  const step4 = await runCmdStreaming(OPENCLAW_NODE, clawArgs([
+    "models", "auth", "login", "--method", "oauth", "--provider", provider,
+  ]), { timeoutMs: 10_000, usePty: true, extraEnv: { TERM: "xterm-256color", COLUMNS: "120", LINES: "40" }, onData(d) { step4out += d; } });
+  results["login-method-oauth-pty"] = { code: step4.code, timeout: step4.killedByTimeout, output: step4out.slice(0, 2000) };
 
   // Clean up
   try { fs.rmSync(configPath(), { force: true }); } catch {}
