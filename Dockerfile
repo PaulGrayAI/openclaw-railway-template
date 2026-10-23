@@ -1,5 +1,5 @@
 # Build openclaw from source to avoid npm packaging gaps (some dist files are not shipped).
-FROM node:24.22.1-bookworm AS openclaw-build
+FROM node:22-bookworm AS openclaw-build
 
 # Dependencies needed for openclaw build
 RUN apt-get update \
@@ -21,7 +21,7 @@ RUN corepack enable
 WORKDIR /openclaw
 
 # Pin to a known ref (tag/branch). If it doesn't exist, fall back to main.
-ARG OPENCLAW_GIT_REF=v2026.10.6
+ARG OPENCLAW_GIT_REF=main
 RUN git clone --depth 1 --branch "${OPENCLAW_GIT_REF}" https://github.com/openclaw/openclaw.git .
 
 # Patch: relax version requirements for packages that may reference unpublished versions.
@@ -39,7 +39,7 @@ RUN pnpm ui:install && pnpm ui:build
 
 
 # Runtime image
-FROM node:24.22.1-bookworm
+FROM node:22-bookworm
 ENV NODE_ENV=production
 
 RUN apt-get update \
