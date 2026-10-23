@@ -1,5 +1,5 @@
 # Build openclaw from source to avoid npm packaging gaps (some dist files are not shipped).
-FROM node:22.23.4-bookworm AS openclaw-build
+FROM node:24.22.1-bookworm AS openclaw-build
 
 # Dependencies needed for openclaw build
 RUN apt-get update \
@@ -39,7 +39,7 @@ RUN pnpm ui:install && pnpm ui:build
 
 
 # Runtime image
-FROM node:22.23.4-bookworm
+FROM node:24.22.1-bookworm
 ENV NODE_ENV=production
 
 RUN apt-get update \
